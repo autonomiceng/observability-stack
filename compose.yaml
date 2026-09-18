@@ -142,6 +142,8 @@ services:
     # Native readiness is probed by Caddy, including distroless image variants.
 
   tempo:
+    # The idle backend worker takes 30 seconds to finish its shutdown request.
+    stop_grace_period: 45s
     image: grafana/tempo:3.0.3@sha256:0296560ac66f8a3600d7fb3014a52c189d4d9c3549ad6ff441bf2409855d68d5
     restart: unless-stopped
     pids_limit: 512

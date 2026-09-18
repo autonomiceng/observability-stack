@@ -8,6 +8,8 @@ Describe the problem and resulting behavior.
 - [ ] `python3 -m unittest discover -s tests`
 - [ ] `scripts/smoke.sh` (required for any image, configuration, or bootstrap change)
 
+- [ ] For recovery or storage changes, both filesystem and S3 restore drills passed; otherwise marked not applicable.
+
 ## Experience Change
 
 Yes / No. If yes, the operator-visible change and its rollback, in one paragraph for the release notes.

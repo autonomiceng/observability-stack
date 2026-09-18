@@ -63,7 +63,11 @@ for mode in 'http localhost none' 'https example.com acme' 'https example.com in
     -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" "$caddy_image" \
     caddy validate --config /etc/caddy/Caddyfile >/dev/null
 done
-echo 'Caddyfile (3 modes): PASS'
+docker run --rm -e OB_LISTEN_SCHEME=http -e OB_PUBLIC_DOMAIN=observe.example.com -e OB_TLS_ISSUER=none \
+  -e 'OB_TRUSTED_PROXIES=172.30.0.2/32' -e 'OB_OPERATOR_ALLOW=192.0.2.10/32' \
+  -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" "$caddy_image" \
+  caddy validate --config /etc/caddy/Caddyfile >/dev/null
+echo 'Caddyfile (3 access modes and trusted proxy): PASS'
 for enabled in true false; do
 for token in '' validation-only; do
   docker run --rm -e "OB_SCRAPE_GATEWAY=$enabled" -e "OB_BACKPLANE_OPERATIONS_TOKEN=$token" \

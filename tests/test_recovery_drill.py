@@ -118,3 +118,35 @@ class RecoveryDrillTests(unittest.TestCase):
         with patch.object(recovery_assertions.subprocess, 'run', side_effect=response(b'partial', 1)):
             with self.assertRaisesRegex(RuntimeError, 'could not read'):
                 recovery_assertions.s3_inventory(stack)
+
+
+    def test_checkpoint_wrappers_preserve_sanitized_refusal_without_private_details(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'scripts').mkdir()
+            script = ('#!' + sys.executable + '\nimport checkpoint\n'
+                      'def fail():\n'
+                      '    raise checkpoint.bootstrap.Refused("not_ready", "PRIVATE_DOCKER_SECRET")\n'
+                      'checkpoint.main = fail\n'
+                      'raise SystemExit(checkpoint.cli())\n')
+            for operation in ('backup', 'restore'):
+                entry = root / 'scripts' / (operation + '.sh')
+                entry.write_text(script)
+                entry.chmod(0o700)
+                program = (
+                    'import importlib.util, pathlib, sys\n'
+                    f'spec = importlib.util.spec_from_file_location("drill", {drill.__file__!r})\n'
+                    'drill = importlib.util.module_from_spec(spec)\n'
+                    'spec.loader.exec_module(drill)\n'
+                    'try:\n'
+                    f'    drill.run_checkpoint(pathlib.Path({str(root)!r}), {operation!r}, pathlib.Path("unused.env"))\n'
+                    'except RuntimeError as error:\n'
+                    '    print(error, file=sys.stderr)\n'
+                    '    sys.exit(1)\n')
+                env = dict(os.environ, PYTHONPATH=str(checkpoint.ROOT / 'scripts'))
+                result = subprocess.run([sys.executable, '-c', program], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('FAIL: not_ready: readiness probes failed', result.stderr)
+                self.assertIn(operation + ' failed (exit 1)', result.stderr)
+                self.assertNotIn('PRIVATE_DOCKER_SECRET', result.stderr + result.stdout)
+                self.assertNotIn('Traceback', result.stderr)

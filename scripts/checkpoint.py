@@ -172,6 +172,8 @@ class Stack:
         targets = set(labelled) | {name for name in names if name.startswith(self.project + '_')}
         targets |= {volume['name'] for volume in self.config['volumes'].values()} & set(names)
         for name in sorted(targets):
+            if checked(['docker', 'ps', '-q', '--filter', f'volume={name}'], self.runner):
+                raise RuntimeError(f'restore refused: running consumer of target volume {name}')
             try:
                 self.helper(['--mount', f'type=volume,src={name},dst=/target,readonly'],
                             'entries=$(ls -A /target); test -z "$entries"')
@@ -214,7 +216,7 @@ def prune_checkpoints(directory, keep):
         shutil.rmtree(path)
 
 
-def backup(stack, timeout=120):
+def backup(stack, timeout=120, sleep=time.sleep):
     keep = int(stack.settings.get('OB_BACKUP_KEEP', '7'))
     if keep < 1:
         raise RuntimeError('OB_BACKUP_KEEP must be a positive integer')
@@ -229,8 +231,14 @@ def backup(stack, timeout=120):
     destination = stack.backups / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     destination.mkdir(mode=0o700)
     stopped = []
+    capture_failed = False
     try:
         for service in stack.writers:
+            if service == 'tempo':
+                # Tempo 3.0's frontend queue cleanup runs every 30s and stops on SIGTERM.
+                # With ingress and Grafana fenced, let empty query queues disappear first.
+                # See upstream modules/frontend/queue/queue.go (queueCleanupPeriod/stopping).
+                sleep(35)
             stopped.append(service)
             stack.dc('stop', '-t', str(timeout), service)
             stack.stopped_cleanly(service)
@@ -240,6 +248,7 @@ def backup(stack, timeout=120):
                           '--mount', f'type=bind,src={destination},dst=/checkpoint'],
                          'umask 077; tar -C /source -cf "/checkpoint/$1.tar" .; '
                          'chown "$2:$3" "/checkpoint/$1.tar"', key, str(os.getuid()), str(os.getgid()))
+        verify_archives(destination, stack.volumes)
         shutil.copytree(marker.parent, destination / 'installation')
         for path in configuration_files():
             target = destination / 'configuration' / path.relative_to(ROOT)
@@ -268,10 +277,26 @@ def backup(stack, timeout=120):
                 os.fsync(fd)
             finally:
                 os.close(fd)
+    except BaseException:
+        capture_failed = True
+        raise
     finally:
         if stopped:
-            stack.dc('start', '--wait', '--wait-timeout', '300', *reversed(stopped))
-            stack.wait_ready()
+            handlers = {}
+            try:
+                # A second interruption must not strand the services being resumed.
+                for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+                    handlers[signum] = signal.signal(signum, signal.SIG_IGN)
+                try:
+                    stack.dc('start', *reversed(stopped))
+                    stack.wait_ready()
+                except BaseException:
+                    if not capture_failed:
+                        raise
+                    print('FAIL: service resumption also failed; inspect service state privately', file=sys.stderr)
+            finally:
+                for signum, handler in handlers.items():
+                    signal.signal(signum, handler)
     # A durable capture remains recoverable even if service resumption fails.
     textfile = stack.state / 'textfile'
     textfile.mkdir(parents=True, exist_ok=True)
@@ -297,8 +322,18 @@ def verify_checkpoint(stack, source):
     for path in configuration_files():
         if path.read_bytes() != (source / 'configuration' / path.relative_to(ROOT)).read_bytes():
             raise RuntimeError('restore requires the matching configuration checkout')
-    for key in stack.volumes:
-        with tarfile.open(source / (key + '.tar')) as archive:
+    verify_archives(source, stack.volumes)
+    lines, _ = bootstrap.read_env(stack.env_file)
+    present = {match['key'] for match in map(bootstrap.ENV_LINE.match, lines) if match}
+    missing = set(doc['env_keys']) - present
+    if missing:
+        names = sorted(key for key in missing if re.fullmatch(r'[A-Z][A-Z0-9_]*', key))
+        print('WARNING: captured env key names missing from supplied .env: ' + ', '.join(names), file=sys.stderr)
+
+
+def verify_archives(directory, volumes):
+    for key in volumes:
+        with tarfile.open(directory / (key + '.tar')) as archive:
             for member in archive:
                 path = Path(member.name)
                 if path.is_absolute() or '..' in path.parts or not (member.isfile() or member.isdir()):
@@ -309,6 +344,8 @@ def restore(stack, source):
     source = source.resolve()
     verify_checkpoint(stack, source)
     stack.check_empty()
+    bootstrap.alert_config(stack.settings)
+    bootstrap.ensure_network(stack.runner, stack.settings.get('OB_PLATFORM_NETWORK', 'platform'))
     for key in stack.volumes:
         name = stack.volume_name(key)
         checked(['docker', 'volume', 'create', '--label', f'com.docker.compose.project={stack.project}',
@@ -345,13 +382,32 @@ def main():
                 restore(stack, args.checkpoint)
 
 
+def cli():
+    try:
+        main()
+        return 0
+    except bootstrap.Refused as error:
+        # Refused.detail can contain raw Docker output or interpolated settings.
+        details = {
+            'env_repair_required': 'repair managed keys in the original .env',
+            'alert_delivery_invalid': 'check alert delivery settings in the original .env',
+            'alert_delivery_required': 'configure alert delivery or explicitly select OB_ALERTS=placeholder',
+            'network_create_failed': 'shared network unavailable; inspect Docker diagnostics privately',
+            'volume_create_failed': 'volume creation failed; inspect Docker diagnostics privately',
+            'not_ready': 'readiness probes failed; inspect service logs privately',
+        }
+        code = error.code if re.fullmatch(r'[a-z_]+', error.code) else 'bootstrap_refused'
+        detail = details.get(code, 'bootstrap prerequisite failed; inspect installation privately')
+        print(f'FAIL: {code}: {detail}', file=sys.stderr)
+        return 1
+    except (RuntimeError, OSError, ValueError, KeyError, tarfile.TarError, KeyboardInterrupt) as error:
+        print(f'FAIL: {error}', file=sys.stderr)
+        return 1
+
+
 if __name__ == '__main__':
     def interrupted(signum, frame):
         raise RuntimeError('interrupted; resuming fenced services')
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGHUP, interrupted)
-    try:
-        main()
-    except (RuntimeError, OSError, ValueError, KeyError, tarfile.TarError, KeyboardInterrupt) as error:
-        print(f'FAIL: {error}', file=sys.stderr)
-        sys.exit(1)
+    sys.exit(cli())

@@ -1,5 +1,10 @@
 """Checkpoint secrecy, restore refusal and fence contract; no Docker calls."""
+import contextlib
+import io
 import json
+import shutil
+import signal
+import tarfile
 import subprocess
 import sys
 import tempfile
@@ -106,7 +111,7 @@ class CheckpointTests(unittest.TestCase):
             stack = SimpleNamespace(backups=directory, settings={})
             with patch.object(checkpoint.shutil, 'disk_usage', return_value=SimpleNamespace(free=101)):
                 with self.assertRaisesRegex(RuntimeError, 'free space'):
-                    checkpoint.backup(stack)
+                    checkpoint.backup(stack, sleep=lambda _: None)
 
 
 class BackupAttestationTests(unittest.TestCase):
@@ -169,11 +174,14 @@ class BackupAttestationTests(unittest.TestCase):
 
     def archive(self, mounts, script, key, *args):
         destination = next(m.split('src=')[1].split(',')[0] for m in mounts if 'dst=/checkpoint' in m)
-        (Path(destination) / (key + '.tar')).write_bytes(b'archive')
+        with tarfile.open(Path(destination) / (key + '.tar'), 'w') as archive:
+            entry = tarfile.TarInfo('data')
+            entry.size = 7
+            archive.addfile(entry, io.BytesIO(b'archive'))
 
     def assert_refused_before_capture(self, message):
         with self.assertRaisesRegex(RuntimeError, message):
-            checkpoint.backup(self.stack)
+            checkpoint.backup(self.stack, sleep=lambda _: None)
         self.stack.helper.assert_not_called()
         self.assertFalse(any('stop' in argv for argv in self.calls))
         self.assertEqual(list(self.stack.backups.iterdir()), [])
@@ -211,7 +219,7 @@ class BackupAttestationTests(unittest.TestCase):
             self.foreign_consumer = True
         self.stack.stopped_cleanly = stopped
         with self.assertRaisesRegex(RuntimeError, 'consumer'):
-            checkpoint.backup(self.stack)
+            checkpoint.backup(self.stack, sleep=lambda _: None)
         self.stack.helper.assert_not_called()
         self.assertTrue(any('start' in argv for argv in self.calls))
 
@@ -228,7 +236,7 @@ class BackupAttestationTests(unittest.TestCase):
                 self.restart_error = failure == 'start'
                 self.stack.wait_ready.side_effect = RuntimeError('not healthy') if failure == 'readiness' else None
                 with self.assertRaises(RuntimeError):
-                    checkpoint.backup(self.stack)
+                    checkpoint.backup(self.stack, sleep=lambda _: None)
                 self.assertEqual(metric.read_text(), 'previous-success')
                 self.assertTrue(old.exists())
                 self.assertGreater(len(checkpoint.complete_checkpoints(self.stack.backups)), 1)
@@ -242,8 +250,158 @@ class BackupAttestationTests(unittest.TestCase):
             self.assertFalse((self.stack.state / 'textfile/checkpoint.prom').exists())
             self.assertFalse(self.stopped)
         self.stack.wait_ready.side_effect = ready
-        destination = checkpoint.backup(self.stack)
+        destination = checkpoint.backup(self.stack, sleep=lambda _: None)
         self.stack.wait_ready.assert_called_once()
         self.assertTrue((destination / 'manifest.json').exists())
         self.assertFalse(old.exists())
         self.assertIn('stack_checkpoint_last_success', (self.stack.state / 'textfile/checkpoint.prom').read_text())
+
+
+    def test_capture_rejects_unrestorable_tar_before_manifest_or_pruning(self):
+        old = self.stack.backups / '20260917T020000000000Z'
+        old.mkdir()
+        (old / 'manifest.json').write_text('{}')
+        def archive(mounts, script, key, *args):
+            destination = next(m.split('src=')[1].split(',')[0] for m in mounts if 'dst=/checkpoint' in m)
+            with tarfile.open(Path(destination) / (key + '.tar'), 'w') as handle:
+                member = tarfile.TarInfo('unsafe-link')
+                member.type, member.linkname = tarfile.SYMTYPE, '/outside'
+                handle.addfile(member)
+        self.stack.helper.side_effect = archive
+        with self.assertRaisesRegex(RuntimeError, 'unsupported archive member'):
+            checkpoint.backup(self.stack, sleep=lambda _: None)
+        self.assertEqual(checkpoint.complete_checkpoints(self.stack.backups), [old])
+        self.assertFalse((self.stack.state / 'textfile/checkpoint.prom').exists())
+        self.assertFalse(self.stopped)
+
+    def test_capture_error_survives_failed_resume_and_repeated_signals(self):
+        signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+        def interrupted(signum, frame):
+            raise RuntimeError('repeated interruption during resume')
+        for sig in signals:
+            previous = signal.signal(sig, interrupted)
+            self.addCleanup(signal.signal, sig, previous)
+        resumed = False
+        self.stack.helper.side_effect = RuntimeError('capture failed first')
+        runner = self.stack.runner
+        def resume(argv):
+            nonlocal resumed
+            if argv[:3] == ['docker', 'compose', 'start']:
+                for sig in signals:
+                    signal.raise_signal(sig)
+                resumed = True
+                raise checkpoint.bootstrap.Refused('not_ready', 'private upstream detail')
+            return runner(argv)
+        self.stack.runner = resume
+        with self.assertRaisesRegex(RuntimeError, 'capture failed first'), contextlib.redirect_stderr(io.StringIO()):
+            checkpoint.backup(self.stack, sleep=lambda _: None)
+        self.assertTrue(resumed)
+        self.assertEqual({signal.getsignal(sig) for sig in signals}, {interrupted})
+        self.assertFalse(checkpoint.complete_checkpoints(self.stack.backups))
+        self.assertFalse((self.stack.state / 'textfile/checkpoint.prom').exists())
+
+
+class CheckpointVerificationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.checkout = self.root / 'checkout'
+        self.checkout.mkdir()
+        (self.checkout / 'docker').mkdir()
+        for name in ('compose.yaml', 'compose.s3.yaml', 'config.alloy'):
+            shutil.copy2(checkpoint.ROOT / name, self.checkout / name)
+        root_patch = patch.object(checkpoint, 'ROOT', self.checkout)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
+        self.env = self.root / '.env'
+        self.env.write_text('OB_GRAFANA_ADMIN_PASSWORD=original-secret\nOB_S3_ACCESS_KEY=access\n'
+                            'OB_S3_SECRET_KEY=secret\nOB_CAPTURED_OPTIONAL=private-value\n')
+        self.source = self.root / 'checkpoint'
+        self.source.mkdir()
+        (self.source / 'installation').mkdir()
+        (self.source / 'installation/storage-mode').write_text('filesystem')
+        (self.source / 'configuration').mkdir()
+        for path in checkpoint.configuration_files():
+            shutil.copy2(path, self.source / 'configuration' / path.name)
+        with tarfile.open(self.source / 'loki-data.tar', 'w') as archive:
+            archive.addfile(tarfile.TarInfo('empty-file'))
+        self.stack = object.__new__(checkpoint.Stack)
+        self.stack.env_file, self.stack.mode = self.env, 'filesystem'
+        self.stack.volumes, self.stack.settings = ('loki-data',), {'OB_ALERTS': 'placeholder'}
+        self.stack.project, self.stack.state = 'recovery-test', self.root / 'state'
+        self.stack.image = 'helper'
+        self.stack.config = {'volumes': {'loki-data': {'name': 'recovery-test_loki-data'}}}
+        self.publish(self.source)
+
+    def publish(self, source):
+        (source / 'manifest.json').write_text(json.dumps(checkpoint.manifest(source, self.env, 'filesystem')))
+
+    def test_verify_checkpoint_rejects_corruption_extra_files_symlinks_pins_and_config(self):
+        checkpoint.verify_checkpoint(self.stack, self.source)
+        for defect in ('hash', 'extra', 'symlink', 'pins', 'config'):
+            with self.subTest(defect=defect):
+                source = self.root / defect
+                shutil.copytree(self.source, source)
+                if defect == 'hash':
+                    (source / 'loki-data.tar').write_bytes(b'corrupt')
+                elif defect == 'extra':
+                    (source / 'extra').write_text('unexpected')
+                elif defect == 'symlink':
+                    (source / 'extra').symlink_to(self.env)
+                elif defect == 'pins':
+                    doc = json.loads((source / 'manifest.json').read_text())
+                    doc['images'] = ['different-pin']
+                    (source / 'manifest.json').write_text(json.dumps(doc))
+                else:
+                    (source / 'configuration/config.alloy').write_text('different config')
+                    self.publish(source)
+                with self.assertRaises(RuntimeError):
+                    checkpoint.verify_checkpoint(self.stack, source)
+        self.env.write_text(self.env.read_text().replace('OB_CAPTURED_OPTIONAL=private-value\n', ''))
+        with contextlib.redirect_stderr(io.StringIO()) as diagnostic:
+            checkpoint.verify_checkpoint(self.stack, self.source)
+        self.assertIn('OB_CAPTURED_OPTIONAL', diagnostic.getvalue())
+        self.assertNotIn('original-secret', diagnostic.getvalue())
+        self.assertNotIn('private-value', diagnostic.getvalue())
+
+    def test_verify_checkpoint_rejects_traversal_absolute_paths_and_tar_links(self):
+        for name, kind in (('../escape', tarfile.REGTYPE), ('/escape', tarfile.REGTYPE),
+                           ('link', tarfile.SYMTYPE), ('hardlink', tarfile.LNKTYPE)):
+            with self.subTest(name=name):
+                with tarfile.open(self.source / 'loki-data.tar', 'w') as archive:
+                    member = tarfile.TarInfo(name)
+                    member.type, member.linkname = kind, 'empty-file'
+                    archive.addfile(member)
+                self.publish(self.source)
+                with self.assertRaisesRegex(RuntimeError, 'unsupported archive member'):
+                    checkpoint.verify_checkpoint(self.stack, self.source)
+
+    def test_restore_refuses_foreign_consumers_alert_errors_and_missing_network_before_writes(self):
+        volume = self.root / 'target-volume'
+        volume.mkdir()
+        def runner(argv):
+            if argv[:3] == ['docker', 'volume', 'ls']:
+                output = 'recovery-test_loki-data'
+            elif argv[:2] == ['docker', 'ps']:
+                output = 'foreign-container' if 'volume=recovery-test_loki-data' in argv and scenario == 'consumer' else ''
+            elif argv[:3] == ['docker', 'network', 'inspect'] or argv[:3] == ['docker', 'network', 'create']:
+                return subprocess.CompletedProcess(argv, 1, '', 'private network diagnostics')
+            else:
+                (volume / 'unexpected-write').touch()
+                output = ''
+            return subprocess.CompletedProcess(argv, 0, output, '')
+        def helper(mounts, script, *args):
+            if 'tar -xpf' in script:
+                (volume / 'unexpected-extraction').touch()
+        self.stack.runner, self.stack.helper = runner, helper
+        for scenario in ('consumer', 'alert', 'smtp', 'network'):
+            with self.subTest(scenario=scenario):
+                self.stack.settings = {} if scenario == 'alert' else {'OB_ALERTS': 'placeholder'}
+                if scenario == 'smtp':
+                    self.stack.settings = {'OB_ALERT_EMAIL': 'ops@example.com',
+                                           'OB_SMTP_URL': 'smtp://user:bad%0Apassword@example.com'}
+                with self.assertRaises((RuntimeError, checkpoint.bootstrap.Refused)):
+                    checkpoint.restore(self.stack, self.source)
+                self.assertEqual(list(volume.iterdir()), [])
+                self.assertFalse(self.stack.state.exists())

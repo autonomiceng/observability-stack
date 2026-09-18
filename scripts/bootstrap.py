@@ -200,13 +200,17 @@ def alert_config(settings: dict[str, str]) -> tuple[str, dict[str, str]]:
         except ValueError as error:
             raise Refused("alert_delivery_invalid", "invalid SMTP port") from error
         host = f"[{url.hostname}]" if ":" in url.hostname else url.hostname
-        return "email", {
+        smtp = {
             "enabled": "true", "host": f"{host}:{port}",
             "user": urllib.parse.unquote(url.username or ""),
             "password": urllib.parse.unquote(url.password or ""),
             "from_address": settings["OB_ALERT_EMAIL"],
             "startTLS_policy": "MandatoryStartTLS" if url.scheme == "smtp" else "NoStartTLS",
         }
+        for value in smtp.values():
+            if any(c in value for c in ('\n', '\r', '"""')):
+                raise Refused("alert_delivery_invalid", "SMTP values must be single-line without triple quotes")
+        return "email", smtp
     if settings.get("OB_ALERTS") == "placeholder":
         return "placeholder", {}
     raise Refused("alert_delivery_required", "set OB_ALERT_WEBHOOK_URL or OB_ALERT_EMAIL and OB_SMTP_URL; "
@@ -226,9 +230,6 @@ def write_provisioning(root: Path, state: Path, settings: dict[str, str]) -> str
                               {"addresses": "$OB_ALERT_EMAIL" if kind == "email" else "configure@example.invalid"}}]}],
                "policies": [{"orgId": 1, "receiver": "configure-delivery", "group_by": ["grafana_folder", "alertname"]}]}
     (provisioning / "alerting/contact-points.yaml").write_text(json.dumps(contact, indent=2) + "\n")
-    for value in smtp.values():
-        if any(c in value for c in ('\n', '\r', '"""')):
-            raise Refused("alert_delivery_invalid", "SMTP values must be single-line without triple quotes")
     (state / "grafana.ini").write_text("[smtp]\n" + "".join(f'{key} = """{value}"""\n' for key, value in smtp.items()))
     os.chmod(state / "grafana.ini", 0o644)
     console = state / "console"

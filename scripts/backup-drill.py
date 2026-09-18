@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -90,6 +91,15 @@ def cleanup(command, project, network, network_created, work, succeeded):
     return failed
 
 
+def run_checkpoint(root, operation, env_file, *args):
+    # Only checkpoint.py's sanitized stderr is inherited; Docker calls stay captured.
+    result = subprocess.run([str(root / 'scripts' / (operation + '.sh')), *args,
+                             '--env-file', str(env_file)], stdout=subprocess.PIPE, text=True)
+    if result.returncode:
+        raise RuntimeError(f'{operation} failed (exit {result.returncode}); see Checkpoint diagnostic above')
+    return result.stdout.strip()
+
+
 def main():
     root = checkpoint.ROOT
     profile = os.environ.get('SMOKE_PROFILE', 'filesystem')
@@ -143,7 +153,7 @@ def main():
         origin = 'localhost:' + port
         proof = recovery_assertions.ingest(stack, origin)
         objects = recovery_assertions.flush_s3(stack) if profile == 's3' else None
-        output = run([str(root / 'scripts/backup.sh'), '--env-file', str(env_file)])
+        output = run_checkpoint(root, 'backup', env_file)
         print(output, flush=True)
         source = next(line.removeprefix('Checkpoint: ') for line in output.splitlines() if line.startswith('Checkpoint: '))
         # A post-Checkpoint edit must disappear along with the disposable volumes.
@@ -160,7 +170,7 @@ def main():
         shutil.rmtree(stack.state / 'installation')
         # No marker producer survives the wipe, so queries cannot pass by reingestion.
         shutil.rmtree(stack.state / 'textfile')
-        print(run([str(root / 'scripts/restore.sh'), source, '--env-file', str(env_file)]), flush=True)
+        print(run_checkpoint(root, 'restore', env_file, source), flush=True)
         recovery_assertions.verify(env_file, origin, proof)
         if objects is not None:
             recovery_assertions.verify_objects(objects, recovery_assertions.s3_inventory(stack))
