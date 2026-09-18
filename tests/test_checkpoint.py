@@ -474,6 +474,17 @@ class BackupAttestationTests(unittest.TestCase):
         self.assertEqual(probe.call_count, 1)
         sleep.assert_not_called()
 
+    def test_slow_initial_start_consumes_settle_without_exhausting_poll_budget(self):
+        now = 0
+        def start(*args):
+            nonlocal now
+            now = 150
+        with patch.object(self.stack, 'dc', side_effect=start), \
+                patch.object(self.stack, 'wait_ready') as ready, \
+                patch.object(checkpoint.time, 'monotonic', side_effect=lambda: now):
+            self.stack.resume(['caddy'], timeout=120, settle=130)
+        ready.assert_called_once_with(restart=True, timeout=100, settle=0)
+
     def test_invalid_stop_timeout_rejected_before_env_lock_or_docker(self):
         for timeout in (0, -1):
             with self.subTest(timeout=timeout):

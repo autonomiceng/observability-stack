@@ -310,6 +310,8 @@ class Stack:
             try:
                 self.helper(['--mount', f'type=volume,src={name},dst=/target,readonly'],
                             'entries=$(ls -A /target); test -z "$entries"')
+            except (Interrupted, CleanupFailed):
+                raise
             except RuntimeError as error:
                 raise RuntimeError(f'restore refused: non-empty or unreadable volume {name}') from error
 
@@ -378,7 +380,9 @@ class Stack:
 
     def resume(self, stopped, timeout=120, settle=0):
         runner = self.runner
-        deadline = time.monotonic() + timeout + settle
+        started = time.monotonic()
+        settle_until = started + settle
+        deadline = started + timeout + settle
         if runner is bootstrap.run:
             self.runner = lambda argv: subprocess.run(
                 argv, text=True, capture_output=True, check=False, start_new_session=True,
@@ -391,7 +395,10 @@ class Stack:
                 raise
             except (RuntimeError, subprocess.TimeoutExpired):
                 pass
-            self.wait_ready(restart=True, timeout=max(0, deadline - time.monotonic() - settle), settle=settle)
+            now = time.monotonic()
+            remaining_settle = max(0, settle_until - now)
+            self.wait_ready(restart=True, timeout=max(0, deadline - now - remaining_settle),
+                            settle=remaining_settle)
         finally:
             self.runner = runner
 

@@ -100,12 +100,11 @@ Inspect any surviving helper privately before starting another capture.
 For a systemd backup service, set `KillMode=mixed`: its initial SIGTERM reaches the main
 Checkpoint process, allowing cleanup and resumption. Size `TimeoutStopSec` from the time
 SIGTERM is sent, including deferred helper creation/cleanup and the full failure-resumption
-allowance. With stop grace `t`, the initial Compose start has up to `120 + S` seconds,
-where `S = t + 10`. Polling retains the original deadline if start finishes within 120
-seconds; otherwise it still gets a full `S` seconds. Thus the configured worst-case
-resumption allowance is `120 + 2S = 2t + 140` seconds: **380 seconds at the default `t=120`**.
-A prompt initial start usually leaves a total of 250 seconds, but that is not the worst case.
-Allow more than 380 seconds at defaults, plus the final HTTP overrun, helper/control-operation
+allowance. With stop grace `t`, the shared resumption deadline is `120 + S` seconds,
+where `S = t + 10`: **250 seconds at the default `t=120`**. Initial startup and polling
+consume that same budget. Time spent starting services also counts toward the settle
+window, so slow startup does not restart that window or exhaust the polling budget twice.
+Allow more than 250 seconds at defaults, plus the final HTTP overrun, helper/control-operation
 time and scheduling margin. The daemon's late stop overlaps the settle window; do not add
 another full service stop grace to this calculation.
 
@@ -113,7 +112,7 @@ There is no finite guaranteed wall-clock maximum: helper creation and ownership-
 cleanup wait for Docker, and these control operations can stall. The complete capture also
 includes six sequential service stop graces (seven in S3), quiescence of `max(120, t)`, and
 unbounded archive/fsync time before resumption. At defaults, the configured fence plus
-worst-case failure resumption sums to 1,220 seconds in filesystem mode or 1,340 seconds in S3,
+worst-case failure resumption sums to 1,090 seconds in filesystem mode or 1,210 seconds in S3,
 excluding copies, control operations and HTTP overrun. These whole-run allowances are
 separate from systemd's post-SIGTERM `TimeoutStopSec`.
 A separate process session does not escape a systemd cgroup. `KillMode=control-group`, explicit
