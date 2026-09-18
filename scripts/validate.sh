@@ -51,6 +51,7 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
         for name in ('loki','tempo','mimir'):
             assert any(v.get('source', '').endswith('/s3.yaml') for v in services[name]['volumes']), name
     assert set(services) == expected, f'{path}: unexpected services'
+    assert services['tempo'].get('stop_grace_period') == '45s', 'Tempo stop grace'
 PY
 echo 'compose config and pins: PASS'
 caddy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["caddy"]["image"])' "$work/filesystem.json")

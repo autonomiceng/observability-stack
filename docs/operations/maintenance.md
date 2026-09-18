@@ -4,9 +4,17 @@
 
 1. Read upstream release notes, including storage and config migrations. Before editing pins or configuration, run `scripts/backup.sh` with the checkout matching the running installation and retain the original `.env` separately. See [backup and restore](backup.md).
 2. Resolve the stable tag with `docker buildx imagetools inspect <ref> --format '{{.Manifest.Digest}}'` and put the complete `tag@sha256` in `compose.yaml`.
-3. Run `scripts/validate.sh`, unit tests and `scripts/smoke.sh`, `SMOKE_PROFILE=s3 scripts/smoke.sh` and `scripts/backup-drill.sh` against the new pins.
+3. Run `scripts/validate.sh`, unit tests and `scripts/smoke.sh`, `SMOKE_PROFILE=s3 scripts/smoke.sh`, `SMOKE_PROFILE=filesystem scripts/backup-drill.sh` and `SMOKE_PROFILE=s3 scripts/backup-drill.sh` against the new pins.
 4. Verify the pre-change Checkpoint is complete and replicated off-host before applying the upgrade.
-5. Apply with `docker compose pull` and `python3 scripts/bootstrap.py`, then check readiness and recent data in Grafana.
+5. Pause direct producers. Stop query sources with `docker compose stop -t 120 caddy alloy grafana`,
+   wait 35 seconds, then run `docker compose stop -t 120 tempo` before applying the upgrade.
+   Inspect Tempo's container state and require exit 0 with `OOMKilled=false`; a forced stop
+   is a failed gate. See [Tempo query quiescence](backup.md#tempo-query-quiescence).
+   Do not query Tempo directly during this fence. Its ordinary 45-second grace alone cannot
+   prevent the recent-query shutdown hang.
+6. Apply with `docker compose pull` and `python3 scripts/bootstrap.py`, then check readiness,
+   Grafana login and historical telemetry before resuming producers. Keep source volumes
+   and the pre-change Checkpoint until recovery verification completes.
 
 Restore the entire Checkpoint for a data-format rollback. Reverting only an image tag is safe
 only when its release notes promise compatibility with the newer on-disk format. Expect
@@ -22,7 +30,7 @@ Compose override. Validate with `docker compose config --quiet`; inspect the tem
 `docker compose config --no-interpolate`. Interpolated `docker compose config` output includes
 Grafana and S3 secrets. Never attach it to issues or public logs. Do not toggle a
 running installation between storage modes: bootstrap refuses a mode change, and direct
-Compose commands cannot migrate stored data. Checkpoints include RustFS in S3 mode; the automated restore drill exercises filesystem mode. RustFS uses the
+Compose commands cannot migrate stored data. Checkpoints include RustFS in S3 mode; the automated restore drills exercise both filesystem and S3 modes. RustFS uses the
 same pinned image as the gateway but has its own credentials, buckets and volume.
 
 ## Alerts and metric contracts

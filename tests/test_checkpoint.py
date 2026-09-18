@@ -40,7 +40,9 @@ class CheckpointTests(unittest.TestCase):
         def runner(argv):
             calls.append(argv)
             output = 'restore-test_loki-data' if argv[:3] == ['docker', 'volume', 'ls'] else ''
-            code = 1 if argv[:2] == ['docker', 'run'] else 0
+            code = 1 if argv[:2] == ['docker', 'create'] else 0
+            if argv[:2] == ['docker', 'inspect']:
+                return subprocess.CompletedProcess(argv, 1, '', '')
             return subprocess.CompletedProcess(argv, code, output, '')
         with tempfile.TemporaryDirectory() as tmp:
             stack = object.__new__(checkpoint.Stack)
@@ -152,7 +154,7 @@ class BackupAttestationTests(unittest.TestCase):
                 output = json.dumps([{'Name': 'test_loki-data'}])
             elif argv[:2] == ['docker', 'inspect']:
                 self.container['State'] = {'Status': 'exited' if self.stopped else 'running',
-                                           'ExitCode': 0, 'OOMKilled': False}
+                                           'Running': not self.stopped, 'ExitCode': 0, 'OOMKilled': False}
                 output = json.dumps([self.container])
             elif argv[:2] == ['docker', 'ps']:
                 output = 'foreign' if self.foreign_consumer else ('' if self.stopped else 'id')
@@ -162,8 +164,9 @@ class BackupAttestationTests(unittest.TestCase):
                 elif argv[2] == 'stop':
                     self.stopped = True
                 elif argv[2] == 'start':
-                    self.stopped = False
                     code = int(self.restart_error)
+                    if not code:
+                        self.stopped = False
             return subprocess.CompletedProcess(argv, code, output, '')
         stack.runner = runner
         stack.helper = Mock(side_effect=self.archive)
@@ -234,9 +237,17 @@ class BackupAttestationTests(unittest.TestCase):
         for failure in ('start', 'readiness'):
             with self.subTest(failure=failure):
                 self.restart_error = failure == 'start'
-                self.stack.wait_ready.side_effect = RuntimeError('not healthy') if failure == 'readiness' else None
-                with self.assertRaises(RuntimeError):
+                if failure == 'start':
+                    self.stack.wait_ready = checkpoint.Stack.wait_ready.__get__(self.stack)
+                else:
+                    self.stack.wait_ready = Mock(side_effect=RuntimeError('not healthy'))
+                with self.assertRaises(RuntimeError), contextlib.redirect_stderr(io.StringIO()) as diagnostic, \
+                        patch.object(checkpoint.time, 'monotonic', side_effect=range(0, 1000, 10)), \
+                        patch.object(checkpoint.time, 'sleep'):
                     checkpoint.backup(self.stack, sleep=lambda _: None)
+                if failure == 'start':
+                    self.assertGreater(sum(argv[:3] == ['docker', 'compose', 'start'] for argv in self.calls), 1)
+                self.assertIn('Checkpoint complete but services not resumed:', diagnostic.getvalue())
                 self.assertEqual(metric.read_text(), 'previous-success')
                 self.assertTrue(old.exists())
                 self.assertGreater(len(checkpoint.complete_checkpoints(self.stack.backups)), 1)
@@ -245,7 +256,7 @@ class BackupAttestationTests(unittest.TestCase):
         old = self.stack.backups / '20260917T020000000000Z'
         old.mkdir()
         (old / 'manifest.json').write_text('{}')
-        def ready():
+        def ready(**kwargs):
             self.assertTrue(old.exists())
             self.assertFalse((self.stack.state / 'textfile/checkpoint.prom').exists())
             self.assertFalse(self.stopped)
@@ -274,6 +285,193 @@ class BackupAttestationTests(unittest.TestCase):
         self.assertFalse((self.stack.state / 'textfile/checkpoint.prom').exists())
         self.assertFalse(self.stopped)
 
+    def test_tempo_fence_waits_after_query_sources_and_mimir_before_clean_stop(self):
+        self.stack.writers = checkpoint.WRITERS + ('rustfs',)
+        self.stack.attest_capture = lambda: None
+        self.stack.check_capture_volumes = lambda: None
+        events = []
+        original = self.stack.runner
+        def runner(argv):
+            if argv[:3] == ['docker', 'compose', 'ps'] and '--services' in argv:
+                return subprocess.CompletedProcess(argv, 0, ' '.join(self.stack.writers), '')
+            if argv[:3] == ['docker', 'compose', 'stop']:
+                events.append(argv[-1])
+            return original(argv)
+        self.stack.runner = runner
+        destination = checkpoint.backup(self.stack, sleep=lambda seconds: events.append(seconds))
+        self.assertEqual(events, ['caddy', 'alloy', 'grafana', 'loki', 'mimir', 35, 'tempo', 'rustfs'])
+        self.assertTrue((destination / 'manifest.json').exists())
+
+    def test_resume_recovers_late_stop_missing_writer_and_waits_for_rustfs_health(self):
+        stack = self.stack
+        stack.writers = ('loki', 'rustfs')
+        stack.config['services']['rustfs'] = {'healthcheck': {'test': ['CMD', 'probe']}}
+        del stack.wait_ready
+        clock = [0]
+        state = {'loki': 'missing', 'rustfs': 'missing-health'}
+        recover_health = True
+        started = stack.state / 'restarted-after-late-stop'
+        created = stack.state / 'recreated-missing-writer'
+        attempts = []
+        first_ps = True
+        permanent = False
+        def runner(argv):
+            nonlocal first_ps
+            attempts.append(argv)
+            output, code = '', 0
+            if argv[:3] == ['docker', 'compose', 'ps']:
+                if first_ps or permanent:
+                    first_ps = False
+                    return subprocess.CompletedProcess(argv, 1, '', 'private daemon error')
+                output = '' if state[argv[-1]] == 'missing' else argv[-1]
+            elif argv[:3] == ['docker', 'compose', 'up']:
+                created.touch()
+                state[argv[-1]] = 'stopped'
+            elif argv[:3] == ['docker', 'compose', 'start']:
+                if len(argv) > 4:
+                    code = 1  # The original stop is still finishing on the daemon.
+                else:
+                    state[argv[-1]] = 'running'
+                    started.touch()
+            elif argv[:2] == ['docker', 'inspect']:
+                service = argv[-1]
+                container_state = {'Running': state[service] not in ('missing', 'stopped')}
+                if service == 'rustfs' and state[service] != 'missing-health':
+                    container_state['Health'] = {'Status': state[service]}
+                output = json.dumps([{'State': container_state}])
+            return subprocess.CompletedProcess(argv, code, output, '')
+        def sleep(seconds):
+            clock[0] += seconds
+            if started.exists() and recover_health:
+                state['rustfs'] = 'healthy'
+        def probe(*args, **kwargs):
+            self.assertTrue(created.exists())
+            self.assertTrue(started.exists())
+            self.assertEqual(state['rustfs'], 'healthy')
+        stack.runner = runner
+        with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(checkpoint.time, 'sleep', side_effect=sleep), \
+                patch.object(checkpoint.bootstrap, 'wait_ready', side_effect=probe) as http:
+            stack.resume(stack.writers, timeout=8)
+            self.assertEqual(http.call_count, 5)
+            recover_health = False
+            state['rustfs'] = 'unhealthy'
+            with self.assertRaisesRegex(RuntimeError, 'deadline'):
+                stack.wait_ready(restart=True, timeout=3)
+            self.assertEqual(http.call_count, 5)
+            permanent = True
+            before = len(attempts)
+            with self.assertRaisesRegex(RuntimeError, 'deadline'):
+                stack.wait_ready(restart=True, timeout=3)
+            self.assertGreaterEqual(len(attempts) - before, 2)
+
+    def test_helper_failure_removes_only_its_owned_container_before_resume(self):
+        stack = self.stack
+        stack.image = 'pinned-helper'
+        del stack.helper
+        containers = {'test-checkpoint-helper': {'Id': 'foreign', 'Config': {'Labels': {}}}}
+        names = []
+        original = stack.runner
+        removed = stack.state / 'owned-helper-removed'
+        def runner(argv):
+            if argv[:2] == ['docker', 'create']:
+                name = argv[argv.index('--name') + 1]
+                label = argv[argv.index('--label') + 1]
+                names.append(name)
+                containers[name] = {'Id': 'owned', 'Config': {'Labels': dict([label.split('=', 1)])}}
+                return subprocess.CompletedProcess(argv, 0, 'owned', '')
+            if argv[:3] == ['docker', 'start', '-a']:
+                (stack.state / 'partial-archive').write_text('partial')
+                raise RuntimeError('archive command interrupted')
+            if argv[:2] == ['docker', 'inspect'] and argv[-1] in containers:
+                return subprocess.CompletedProcess(argv, 0, json.dumps([containers[argv[-1]]]), '')
+            if argv[:3] == ['docker', 'rm', '-f']:
+                self.assertEqual(argv[-1], 'owned')
+                del containers[names[-1]]
+                removed.touch()
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            if argv[:3] == ['docker', 'compose', 'start']:
+                self.assertTrue(removed.exists())
+            return original(argv)
+        stack.runner = runner
+        with self.assertRaisesRegex(RuntimeError, 'archive command interrupted'):
+            checkpoint.backup(stack, sleep=lambda _: None)
+        self.assertEqual(set(containers), {'test-checkpoint-helper'})
+        self.assertFalse(checkpoint.complete_checkpoints(stack.backups))
+        self.assertFalse(self.stopped)
+        self.assertTrue((stack.state / 'partial-archive').exists())
+        (stack.state / 'partial-archive').unlink()
+        def interrupted_create(argv):
+            result = runner(argv)
+            if argv[:2] == ['docker', 'create']:
+                signal.raise_signal(signal.SIGTERM)
+            return result
+        stack.runner = interrupted_create
+        with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+            stack.helper([], 'true')
+        self.assertEqual(set(containers), {'test-checkpoint-helper'})
+        self.assertNotEqual(names[0], names[1])
+        self.assertFalse((stack.state / 'partial-archive').exists())
+        # A name collision must never authorize deleting a container with another owner.
+        token = names[-1].rsplit('-', 1)[1]
+        containers[names[-1]] = containers['test-checkpoint-helper']
+        def collision(argv):
+            if argv[:2] == ['docker', 'create']:
+                return subprocess.CompletedProcess(argv, 1, '', 'name already in use')
+            return runner(argv)
+        stack.runner = collision
+        with patch.object(checkpoint.uuid, 'uuid4', return_value=SimpleNamespace(hex=token)), \
+                self.assertRaisesRegex(RuntimeError, 'operation failed'), \
+                contextlib.redirect_stderr(io.StringIO()):
+            stack.helper([], 'true')
+        self.assertEqual(containers[names[-1]]['Id'], 'foreign')
+
+    def test_resume_child_survives_process_group_signals_and_finally_gap(self):
+        child = self.stack.state / 'child.py'
+        completed = self.stack.state / 'child-completed'
+        child.write_text(
+            "import os, signal, sys, time\n"
+            "from pathlib import Path\n"
+            "def interrupted(signum, frame): sys.exit(89)\n"
+            "for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):\n"
+            "    signal.signal(sig, interrupted)\n"
+            "    os.killpg(os.getppid(), sig)\n"
+            "    time.sleep(0.02)\n"
+            f"Path({str(completed)!r}).write_text('finished')\n")
+        program = f"""
+import signal, sys
+sys.path[:0] = [{str(Path(__file__).resolve().parent)!r}, {str(checkpoint.ROOT / 'scripts')!r}]
+from test_checkpoint import BackupAttestationTests
+import checkpoint
+case = BackupAttestationTests()
+case.setUp()
+stack = case.stack
+def resume(stopped):
+    stack.command = [sys.executable, {str(child)!r}]
+    stack.runner = checkpoint.bootstrap.run
+    checkpoint.Stack.resume(stack, stopped, timeout=5)
+stack.resume = resume
+line = next(i for i, text in enumerate(open(checkpoint.__file__), 1) if text.strip() == 'resuming = True')
+def trace(frame, event, arg):
+    if event == 'line' and frame.f_code.co_filename == checkpoint.__file__ and frame.f_lineno == line:
+        signal.raise_signal(signal.SIGTERM)
+    return trace
+sys.settrace(trace)
+try:
+    checkpoint.backup(stack, sleep=lambda _: None)
+except RuntimeError as error:
+    assert 'interrupted' in str(error), error
+else:
+    raise AssertionError('finally-gap signal did not interrupt capture')
+finally:
+    sys.settrace(None)
+    case.doCleanups()
+"""
+        result = subprocess.run([sys.executable, '-c', program], text=True, capture_output=True,
+                                start_new_session=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(completed.read_text(), 'finished')
+
     def test_capture_error_survives_failed_resume_and_repeated_signals(self):
         signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
         def interrupted(signum, frame):
@@ -293,8 +491,21 @@ class BackupAttestationTests(unittest.TestCase):
                 raise checkpoint.bootstrap.Refused('not_ready', 'private upstream detail')
             return runner(argv)
         self.stack.runner = resume
-        with self.assertRaisesRegex(RuntimeError, 'capture failed first'), contextlib.redirect_stderr(io.StringIO()):
-            checkpoint.backup(self.stack, sleep=lambda _: None)
+        gap_line = next(i for i, line in enumerate(Path(checkpoint.__file__).read_text().splitlines(), 1)
+                        if line.strip() == 'resuming = True')
+        def trace(frame, event, arg):
+            if event == 'line' and frame.f_code.co_filename == checkpoint.__file__ and frame.f_lineno == gap_line:
+                for sig in signals:
+                    signal.raise_signal(sig)
+            return trace
+        with self.assertRaisesRegex(RuntimeError, 'capture failed first'), contextlib.redirect_stderr(io.StringIO()) as diagnostic:
+            sys.settrace(trace)
+            try:
+                checkpoint.backup(self.stack, sleep=lambda _: None)
+            finally:
+                sys.settrace(None)
+        self.assertIn('service resumption also failed', diagnostic.getvalue())
+        self.assertNotIn('private upstream detail', diagnostic.getvalue())
         self.assertTrue(resumed)
         self.assertEqual({signal.getsignal(sig) for sig in signals}, {interrupted})
         self.assertFalse(checkpoint.complete_checkpoints(self.stack.backups))

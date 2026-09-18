@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -99,9 +100,59 @@ class Stack:
         return checked(self.command + list(args), self.runner)
 
     def helper(self, mounts, script, *args):
-        return checked(['docker', 'run', '--rm', '--network', 'none',
-                        '--user', '0', *mounts, '--entrypoint', 'sh', self.image,
-                        '-ec', script, 'sh', *args], self.runner)
+        token = uuid.uuid4().hex
+        name = f'{self.project}-checkpoint-{token}'
+        label = 'observability.checkpoint.helper'
+        pending = []
+        handlers = {}
+        failed = False
+        runner = self.runner
+        if runner is bootstrap.run:
+            runner = lambda argv: subprocess.run(argv, text=True, capture_output=True,
+                                                 check=False, start_new_session=True)
+        def defer(signum, frame):
+            pending.append(signum)
+        try:
+            # Finish create before honoring interruption so cleanup owns a known container.
+            for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+                handlers[signum] = signal.signal(signum, defer)
+            checked(['docker', 'create', '--name', name, '--label', f'{label}={token}',
+                     '--network', 'none', '--user', '0', *mounts, '--entrypoint', 'sh', self.image,
+                     '-ec', script, 'sh', *args], runner)
+            for signum, handler in handlers.items():
+                signal.signal(signum, handler)
+            if pending:
+                raise RuntimeError('interrupted; cleaning up Checkpoint helper')
+            return checked(['docker', 'start', '-a', name], runner)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                for signum in handlers:
+                    signal.signal(signum, defer)
+            finally:
+                try:
+                    result = runner(['docker', 'inspect', name])
+                    if result.returncode:
+                        # Distinguish an absent helper from an unavailable daemon.
+                        remaining = checked(['docker', 'ps', '-aq', '--filter', f'name=^/{name}$'], runner)
+                        if remaining:
+                            raise RuntimeError('cannot inspect Checkpoint helper for cleanup')
+                    else:
+                        containers = json.loads(result.stdout)
+                        if len(containers) != 1 or containers[0]['Config']['Labels'].get(label) != token:
+                            raise RuntimeError('Checkpoint helper ownership mismatch; cleanup refused')
+                        checked(['docker', 'rm', '-f', containers[0]['Id']], runner)
+                except BaseException:
+                    if not failed:
+                        raise
+                    print('FAIL: Checkpoint helper cleanup also failed; inspect containers privately', file=sys.stderr)
+                finally:
+                    for signum, handler in handlers.items():
+                        signal.signal(signum, handler)
+            if pending and not failed:
+                raise RuntimeError('interrupted; Checkpoint helper cleaned up')
 
     def stopped_cleanly(self, service):
         ids = self.dc('ps', '-aq', service).split()
@@ -190,10 +241,70 @@ class Stack:
         self.dc('up', '-d', '--wait', '--wait-timeout', '300')
         self.wait_ready()
 
-    def wait_ready(self):
+    def wait_ready(self, restart=False, timeout=120):
+        deadline = time.monotonic() + timeout
         origin = bootstrap.local_origin(self.settings)
-        for service in ('grafana', 'loki', 'mimir', 'tempo', 'alloy'):
-            bootstrap.wait_ready(origin + '/health/' + service, host=self.settings.get('OB_PUBLIC_DOMAIN', 'localhost'))
+        last = RuntimeError('service resumption timed out; inspect service state privately')
+        probes_passed = False
+        while time.monotonic() < deadline:
+            try:
+                ready = True
+                for service in reversed(self.writers):
+                    ids = self.dc('ps', '-aq', service).split()
+                    if not ids:
+                        ready = False
+                        if restart:
+                            self.dc('up', '-d', '--no-deps', service)
+                        continue
+                    containers = json.loads(checked(['docker', 'inspect', *ids], self.runner))
+                    if len(containers) != 1:
+                        raise RuntimeError(f'resumption requires one container for {service}')
+                    state = containers[0]['State']
+                    if not state.get('Running', False):
+                        ready = False
+                        if restart:
+                            self.dc('start', service)
+                        continue
+                    healthcheck = self.config['services'][service].get('healthcheck', {})
+                    health = state.get('Health', {}).get('Status')
+                    required = bool(healthcheck) and not healthcheck.get('disable') and healthcheck.get('test') != ['NONE']
+                    if health not in (None, 'healthy') or (required and health != 'healthy'):
+                        ready = False
+                if ready:
+                    if probes_passed:
+                        return
+                    for service in ('grafana', 'loki', 'mimir', 'tempo', 'alloy'):
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise RuntimeError('service readiness deadline expired')
+                        bootstrap.wait_ready(origin + '/health/' + service, timeout=min(1, remaining),
+                                             host=self.settings.get('OB_PUBLIC_DOMAIN', 'localhost'))
+                    # A stop submitted before interruption may finish after the first start.
+                    probes_passed = True
+                    continue
+                probes_passed = False
+            except (RuntimeError, bootstrap.Refused, subprocess.TimeoutExpired) as error:
+                last = error
+                probes_passed = False
+            time.sleep(min(1, max(0, deadline - time.monotonic())))
+        raise RuntimeError('service resumption/readiness deadline expired; inspect service state privately') from last
+
+    def resume(self, stopped, timeout=120):
+        runner = self.runner
+        deadline = time.monotonic() + timeout
+        if runner is bootstrap.run:
+            self.runner = lambda argv: subprocess.run(
+                argv, text=True, capture_output=True, check=False, start_new_session=True,
+                timeout=max(0.01, deadline - time.monotonic()))
+        try:
+            # Start can fail while an earlier stop is still in flight; polling retries it.
+            try:
+                self.dc('start', *reversed(stopped))
+            except (RuntimeError, subprocess.TimeoutExpired):
+                pass
+            self.wait_ready(restart=True, timeout=max(0, deadline - time.monotonic()))
+        finally:
+            self.runner = runner
 
 
 def complete_checkpoints(directory):
@@ -232,6 +343,16 @@ def backup(stack, timeout=120, sleep=time.sleep):
     destination.mkdir(mode=0o700)
     stopped = []
     capture_failed = False
+    resuming = False
+    interrupted = False
+    handlers = {}
+    def interrupt(signum, frame):
+        nonlocal interrupted
+        if not interrupted and not resuming and not capture_failed and sys.exc_info()[0] is None:
+            interrupted = True
+            raise RuntimeError('interrupted; resuming fenced services')
+    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        handlers[signum] = signal.signal(signum, interrupt)
     try:
         for service in stack.writers:
             if service == 'tempo':
@@ -281,19 +402,20 @@ def backup(stack, timeout=120, sleep=time.sleep):
         capture_failed = True
         raise
     finally:
-        if stopped:
-            handlers = {}
+        try:
+            # The outer finally still resumes if the first signal lands at this transition.
+            resuming = True
+        finally:
             try:
-                # A second interruption must not strand the services being resumed.
-                for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-                    handlers[signum] = signal.signal(signum, signal.SIG_IGN)
-                try:
-                    stack.dc('start', *reversed(stopped))
-                    stack.wait_ready()
-                except BaseException:
-                    if not capture_failed:
-                        raise
-                    print('FAIL: service resumption also failed; inspect service state privately', file=sys.stderr)
+                if stopped:
+                    try:
+                        stack.resume(stopped)
+                    except BaseException:
+                        if not capture_failed:
+                            if (destination / 'manifest.json').is_file():
+                                print(f'Checkpoint complete but services not resumed: {destination}', file=sys.stderr)
+                            raise
+                        print('FAIL: service resumption also failed; inspect service state privately', file=sys.stderr)
             finally:
                 for signum, handler in handlers.items():
                     signal.signal(signum, handler)

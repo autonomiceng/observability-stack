@@ -58,15 +58,38 @@ changes or independent writers during capture. Env and repository locks exclude 
 bootstrap and Checkpoint operations through these scripts, not direct Docker commands.
 
 The script attempts to resume all fenced services on success, failure or catchable interruption.
-It waits for Compose health and all five HTTP readiness probes before publishing the success
-timestamp or pruning older Checkpoints. A resumption failure preserves the previous timestamp
-and retention set; a completed manifest remains a usable recovery artifact. If capture and
+It starts services, then polls within a 120-second resumption deadline, retrying transient
+Docker inspection failures and restarting stopped writers. Missing writers are recreated
+from the resolved Compose configuration. An interrupted Compose stop can finish on the daemon
+after its CLI exits, so resumption rechecks container state after HTTP probes and retries late
+stops. Permanent failures exhaust the deadline and fail capture's overall result.
+Every writer must be running, and every configured Docker healthcheck must be healthy,
+including RustFS in S3 mode. Distroless Backends without Docker healthchecks require running
+state plus HTTP readiness. All five HTTP probes must pass before publishing the success
+timestamp or pruning older Checkpoints. An in-flight HTTP probe can extend the deadline by
+its bounded request/retry interval.
+
+A resumption failure preserves the previous timestamp and retention set. A completed manifest
+remains a usable recovery artifact; the failure diagnostic prints its path. If capture and
 resumption both fail, the capture error remains primary and a separate sanitized diagnostic
 reports the resumption failure. Repeated TERM/HUP/INT signals are ignored during resumption;
-the previous handlers are restored afterward. SIGKILL or host loss prevents cleanup: inspect the incomplete directory and restart storage, then the
-Collector and ingress manually. A directory without a manifest is incomplete. Remove it
-only after confirming no capture is running. Checksums detect corruption, not malicious
-replacement. Backups take the stack offline for the duration of the volume copies.
+the previous handlers are restored afterward. Resume commands use separate process sessions
+so terminal process-group signals cannot cancel them.
+
+Archive helpers have unique names and ownership labels. Creation completes before honoring
+an interruption; cleanup verifies ownership and removes the helper by container ID before
+resuming services. An unknown preexisting container is never removed. A cleanup failure is
+reported; inspect any surviving helper before starting another capture.
+
+For a systemd backup service, set `KillMode=mixed`: its initial SIGTERM reaches the main
+Checkpoint process, allowing cleanup and resumption. Size `TimeoutStopSec` to cover helper
+creation/cleanup and the resumption deadline, with margin for the host's observed latency.
+A separate process session does not escape a systemd cgroup. `KillMode=control-group`, explicit
+cgroup-wide signals, and systemd's final SIGKILL can still terminate resume children.
+SIGKILL or host loss prevents cleanup: inspect the incomplete directory and any owned helper,
+then restart storage, the Collector and ingress manually. A directory without a manifest is
+incomplete. Remove it only after confirming no capture or helper is running. Checksums detect
+corruption, not malicious replacement. Backups take the stack offline for the volume copies.
 Producer retries, source log rotation and in-memory Collector buffers bound capture-time
 telemetry loss; the fence guarantees consistent persisted storage, not lossless producers.
 
@@ -166,7 +189,8 @@ Checkpoint. They do not independently establish that Tempo had flushed a trace o
 or test recovery from an incomplete combination of local WALs and object storage. Mimir ruler
 and Alertmanager state, every Grafana setting, and exclusion of post-Checkpoint telemetry
 writes are not exercised. The S3 Smoke Contract remains a separate object-store restart test.
-Neither profile has a recovery pass until the supported drill succeeds on the release candidate.
+Both profiles have passed historical-trace recovery with exit-zero fences. Require fresh
+passes from the supported drills on each release candidate.
 
 Run monthly and after backup/pin changes. Example daily capture:
 
