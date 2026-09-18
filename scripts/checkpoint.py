@@ -116,6 +116,50 @@ class Stack:
     def volume_name(self, key):
         return self.config['volumes'][key]['name']
 
+    def attest_capture(self):
+        ids = self.dc('ps', '-q', *self.writers).split()
+        if not ids:
+            raise RuntimeError('backup requires the complete stack running')
+        containers = json.loads(checked(['docker', 'inspect', *ids], self.runner))
+        services = []
+        for container in containers:
+            labels = container['Config']['Labels']
+            service = labels.get('com.docker.compose.service')
+            if labels.get('com.docker.compose.project') != self.project or service not in self.writers:
+                raise RuntimeError('backup container ownership differs from resolved Compose')
+            services.append(service)
+            expected = self.config['services'][service]
+            if container['Config']['Image'] != expected['image']:
+                raise RuntimeError('backup requires the checkout pins matching the running services')
+            mounts = set()
+            for mount in expected.get('volumes', []):
+                kind = mount['type']
+                source = self.volume_name(mount['source']) if kind == 'volume' else mount['source']
+                if kind == 'bind':
+                    source = str(Path(source).resolve())
+                mounts.add((kind, source, mount['target'], not mount.get('read_only', False)))
+            actual = {(mount['Type'], mount.get('Name') if mount['Type'] == 'volume'
+                       else str(Path(mount['Source']).resolve()), mount['Destination'], mount['RW'])
+                      for mount in container['Mounts']}
+            if mounts != actual:
+                raise RuntimeError(f'backup requires {service} mounts matching resolved Compose')
+        if sorted(services) != sorted(self.writers):
+            raise RuntimeError('backup requires exactly one container for each fenced service')
+        self.check_capture_volumes({container['Id'] for container in containers})
+
+    def check_capture_volumes(self, allowed_consumers=()):
+        # --mount creates absent volumes. Inspect first and reject independent writers.
+        names = {self.volume_name(key) for key in self.volumes}
+        names.update(self.volume_name(mount['source']) for service in self.writers
+                     for mount in self.config['services'][service].get('volumes', [])
+                     if mount['type'] == 'volume')
+        for name in sorted(names):
+            checked(['docker', 'volume', 'inspect', name], self.runner)
+            consumers = checked(['docker', 'ps', '--no-trunc', '-q', '--filter', f'volume={name}'],
+                                self.runner).split()
+            if set(consumers) - set(allowed_consumers):
+                raise RuntimeError(f'backup refused: unexpected running consumer of {name}')
+
     def check_empty(self):
         if checked(['docker', 'ps', '-q', '--filter', f'label=com.docker.compose.project={self.project}'], self.runner):
             raise RuntimeError('restore requires all project containers stopped')
@@ -142,6 +186,9 @@ class Stack:
                                  self.project, self.mode == 's3')
         bootstrap.ensure_network(self.runner, self.settings.get('OB_PLATFORM_NETWORK', 'platform'))
         self.dc('up', '-d', '--wait', '--wait-timeout', '300')
+        self.wait_ready()
+
+    def wait_ready(self):
         origin = bootstrap.local_origin(self.settings)
         for service in ('grafana', 'loki', 'mimir', 'tempo', 'alloy'):
             bootstrap.wait_ready(origin + '/health/' + service, host=self.settings.get('OB_PUBLIC_DOMAIN', 'localhost'))
@@ -178,12 +225,7 @@ def backup(stack, timeout=120):
     marker = stack.state / 'installation' / 'storage-mode'
     if not marker.is_file() or marker.read_text().strip() != stack.mode:
         raise RuntimeError('storage-mode marker is missing or differs from .env')
-    ids = stack.dc('ps', '-q', *stack.writers).split()
-    containers = json.loads(checked(['docker', 'inspect', *ids], stack.runner))
-    for container in containers:
-        service = container['Config']['Labels']['com.docker.compose.service']
-        if container['Config']['Image'] != stack.config['services'][service]['image']:
-            raise RuntimeError('backup requires the checkout pins matching the running services')
+    stack.attest_capture()
     destination = stack.backups / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     destination.mkdir(mode=0o700)
     stopped = []
@@ -192,6 +234,7 @@ def backup(stack, timeout=120):
             stopped.append(service)
             stack.dc('stop', '-t', str(timeout), service)
             stack.stopped_cleanly(service)
+        stack.check_capture_volumes()
         for key in stack.volumes:
             stack.helper(['--mount', f'type=volume,src={stack.volume_name(key)},dst=/source,readonly',
                           '--mount', f'type=bind,src={destination},dst=/checkpoint'],
@@ -205,6 +248,7 @@ def backup(stack, timeout=120):
         # Recheck the fence before publishing a complete set.
         for service in stack.writers:
             stack.stopped_cleanly(service)
+        stack.check_capture_volumes()
         doc = manifest(destination, stack.env_file, stack.mode)
         for path in destination.rglob('*'):
             if path.is_file():
@@ -224,19 +268,21 @@ def backup(stack, timeout=120):
                 os.fsync(fd)
             finally:
                 os.close(fd)
-        textfile = stack.state / 'textfile'
-        textfile.mkdir(parents=True, exist_ok=True)
-        pending = textfile / 'checkpoint.prom.tmp'
-        pending.write_text('# TYPE stack_checkpoint_last_success_timestamp_seconds gauge\n'
-                           f'stack_checkpoint_last_success_timestamp_seconds{{stack="{stack.project}"}} {time.time():.0f}\n')
-        os.chmod(pending, 0o644)
-        pending.replace(textfile / 'checkpoint.prom')
-        prune_checkpoints(stack.backups, keep)
-        print(f'Checkpoint: {destination}', flush=True)
-        return destination
     finally:
         if stopped:
-            stack.dc('start', *reversed(stopped))
+            stack.dc('start', '--wait', '--wait-timeout', '300', *reversed(stopped))
+            stack.wait_ready()
+    # A durable capture remains recoverable even if service resumption fails.
+    textfile = stack.state / 'textfile'
+    textfile.mkdir(parents=True, exist_ok=True)
+    pending = textfile / 'checkpoint.prom.tmp'
+    pending.write_text('# TYPE stack_checkpoint_last_success_timestamp_seconds gauge\n'
+                       f'stack_checkpoint_last_success_timestamp_seconds{{stack="{stack.project}"}} {time.time():.0f}\n')
+    os.chmod(pending, 0o644)
+    pending.replace(textfile / 'checkpoint.prom')
+    prune_checkpoints(stack.backups, keep)
+    print(f'Checkpoint: {destination}', flush=True)
+    return destination
 
 
 def verify_checkpoint(stack, source):

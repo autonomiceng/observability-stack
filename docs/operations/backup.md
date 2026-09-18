@@ -9,7 +9,7 @@ Both accept `--env-file /path/to/.env`. Set `OB_BACKUP_DIR` to an existing, moun
 backup directory. Verify the expected mount with `findmnt` before capture. The scripts
 cannot detect an unmounted disk hidden by its empty mountpoint. Use encrypted storage
 and replicate off-host over encrypted transport. Scheduling, encryption and replication are the operator's responsibility.
-`OB_BACKUP_KEEP` defaults to 7 complete Checkpoint sets. A successful capture prunes older
+`OB_BACKUP_KEEP` defaults to 7 complete Checkpoint sets. A capture followed by healthy service resumption prunes older
 complete timestamp directories; incomplete captures remain for inspection. Before fencing,
 backup refuses when free space on the backup filesystem is below the size of the last
 complete Checkpoint. The first capture has no prior size estimate; allow space for every
@@ -38,13 +38,19 @@ are rebuilt from the matching checkout and original env, not archived.
 
 Pause direct producers before backup. The default fence stops Caddy, Alloy, Grafana,
 Loki, Mimir and Tempo in that order, then RustFS in S3 mode, with 120 seconds per service.
-All must have been running with the checkout's image pins. Every stop must reach exit 0 without `OOMKilled`; forced
+Before stopping anything, backup verifies the live image pins and all volume/bind mounts
+against resolved Compose, requires every source volume to exist, and rejects other running
+consumers of those volumes. Volume existence and consumers are checked again under the
+fence before archiving and before publishing the manifest. Every stop must reach exit 0 without `OOMKilled`; forced
 kills, missing containers and unsuccessful exits abort before a completed manifest.
 `--stop-timeout SECONDS` increases the grace period for larger stores. Do not run Compose
 changes or independent writers during capture. Env and repository locks exclude concurrent
 bootstrap and Checkpoint operations through these scripts, not direct Docker commands.
 
-All fenced services resume on success, failure or catchable interruption. SIGKILL or host
+The script attempts to resume all fenced services on success, failure or catchable interruption.
+It waits for Compose health and all five HTTP readiness probes before publishing the success
+timestamp or pruning older Checkpoints. A resumption failure preserves the previous timestamp
+and retention set; a completed manifest remains a usable recovery artifact. SIGKILL or host
 loss prevents cleanup: inspect the incomplete directory and restart storage, then the
 Collector and ingress manually. A directory without a manifest is incomplete. Remove it
 only after confirming no capture is running. Checksums detect corruption, not malicious
@@ -110,17 +116,40 @@ pulls. No measured RTO is claimed until the host drill passes. Measure again wit
 representative volume sizes; archive extraction and WAL replay can dominate recovery.
 
 ```sh
-SMOKE_PROJECT=observability-drill SMOKE_HTTP_PORT=18190 scripts/backup-drill.sh
+SMOKE_PROFILE=filesystem SMOKE_PROJECT=observability-drill SMOKE_HTTP_PORT=18190 scripts/backup-drill.sh
+SMOKE_PROFILE=s3 SMOKE_PROJECT=observability-drill-s3 SMOKE_HTTP_PORT=18190 scripts/backup-drill.sh
 ```
 
-The drill refuses an existing project or network, boots an isolated filesystem project,
-ingests a unique log and a metric sample, removes the metric producer, takes a Checkpoint,
-wipes its disposable volumes and marker, restores, then queries the original log and
-metric at their original time. It prints `RESTORE DRILL PASSED` with measured `RTO=...s`.
-It cleans up only its own resources; failed drill artifacts remain in the printed temp
-path. This proves filesystem recovery; S3 archive restore still needs a separate host
-exercise. The S3 Smoke Contract flushes Loki/Mimir to object storage, checks their object keys
-and proves query continuity across RustFS restart.
+The drill accepts only `SMOKE_PROFILE=filesystem` (default) or `s3`; ambient installation
+profile settings are discarded. CI runs both recovery profiles with a 60-minute timeout
+per job. Require both `Recovery contract` jobs in release/branch protection alongside smoke.
+A workflow alone does not configure required status checks in repository settings.
+
+It refuses existing disposable resources, makes a temporary checkout copy, and boots an
+isolated project. Only this copy disables Docker log discovery, cAdvisor and host filesystem
+collection, removes the Collector's host mounts and drops privileged mode. Log markers are
+injected directly into Loki; a temporary textfile metric and one OTLP trace exercise Alloy.
+The production Smoke Contract still requires Docker log ingestion and host filesystem metrics.
+Other host collectors may observe the drill's containers or resource usage, so use a dedicated
+Docker host when strict host isolation is required. Drill containers retain the disposable
+Compose labels excluded by this stack's production log collection rules.
+
+Before capture the drill verifies its unique log, metric, trace and API-created Grafana
+dashboard. Producers are removed before capture. In S3 mode it flushes Loki/Mimir, requires
+nonempty object inventories and hashes their object bodies with SHA-256. After capture it
+changes the dashboard, destroys all disposable volumes (including RustFS) and the installation
+marker, restores into empty storage, and verifies the original time-bounded telemetry,
+dashboard contents, exclusion of the later dashboard edit, and the saved S3 object hashes.
+It prints `RESTORE DRILL PASSED (<profile>)` and measured `RTO=...s` only after these checks.
+Failed artifacts stay in the printed temporary path; they include generated credentials and
+sensitive volume contents. The successful drill removes its temporary copy and resources.
+
+These checks cover historical trace recovery across the complete local/WAL/object-store
+Checkpoint. They do not independently establish that Tempo had flushed a trace object to S3,
+or test recovery from an incomplete combination of local WALs and object storage. Mimir ruler
+and Alertmanager state, every Grafana setting, and exclusion of post-Checkpoint telemetry
+writes are not exercised. The S3 Smoke Contract remains a separate object-store restart test.
+Neither profile has a recovery pass until the supported drill succeeds on the release candidate.
 
 Run monthly and after backup/pin changes. Example daily capture:
 

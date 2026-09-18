@@ -10,6 +10,7 @@
 	# X-Forwarded-Proto so Grafana sees https when TLS ends at the edge.
 	servers {
 		trusted_proxies static {$OB_TRUSTED_PROXIES}
+		trusted_proxies_strict
 	}
 }
 
@@ -36,7 +37,7 @@
 }
 
 (health) {
-	@operator remote_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
+	@operator client_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
 	handle @operator {
 		reverse_proxy {args[0]} {
 			header_up Host {args[1]}
@@ -86,7 +87,7 @@
 	handle /health/alerts {
 		root * /srv/state
 		@operatorPlaceholder {
-			remote_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
+			client_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
 			file /alerts-degraded.json
 		}
 		@placeholder file /alerts-degraded.json
@@ -96,7 +97,7 @@
 		respond `{"status":"ready"}` 200
 	}
 	handle /versions.json {
-		@operator remote_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
+		@operator client_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
 		handle @operator {
 			root * /srv/state
 			file_server

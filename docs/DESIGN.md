@@ -62,7 +62,7 @@ The override selects the three S3 configs. A one-shot `rustfs-init` reuses RustF
 SigV4-capable curl to create separate buckets. WALs, compaction state and caches remain local.
 The storage-mode marker refuses silent switches. This is a fresh-install option; copying
 filesystem data to S3 requires an explicit migration. Checkpoints archive local volumes
-and RustFS together in S3 mode. The restore drill exercises filesystem mode.
+and RustFS together in S3 mode. The restore drill has explicit filesystem and S3 modes with historical telemetry and Grafana state checks.
 
 Grafana provisions three fixed datasource UIDs (`loki`, `mimir`, `tempo`), the `Stacks` folder,
 one dashboard and thirteen alerts. Anonymous access and user signup are disabled. The admin
@@ -86,7 +86,10 @@ refuses an existing disposable project name before installing its cleanup trap.
 Grafana does not offer a general offline provisioning validator used here. The smoke contract
 checks its authenticated datasource, dashboard and alert APIs after loading the YAML. Alloy's
 image validates its config with both gateway toggle values and empty/nonempty backplane token settings. Pull request, weekly and manually dispatched CI
-runs both filesystem and S3 smoke; S3 verifies log/metric continuity over RustFS restart.
+runs both filesystem and S3 smoke; S3 verifies log/metric/trace continuity and object bodies over RustFS restart.
+Separate filesystem and S3 recovery jobs restore Checkpoints into empty disposable volumes.
+The recovery drill disables host discovery only in its temporary checkout; production smoke
+retains host collection assertions.
 The fenced Checkpoint scripts preserve the five telemetry volumes, optional RustFS,
 configuration and installation marker. The manifest records env key names; operators
 retain the original secrets separately. See `operations/backup.md`.

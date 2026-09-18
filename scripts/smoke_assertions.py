@@ -118,6 +118,7 @@ def ingest_marker(env_file, origin, state):
                              check=True, capture_output=True, text=True).stdout.strip()
     metric = 'stack_persistence_marker{marker="' + marker + '"}'
     textfile = state / 'textfile' / 'persistence-marker.prom'
+    ingested = False
     try:
         textfile.write_text(metric + ' 42\n')
         textfile.chmod(0o644)
@@ -127,9 +128,22 @@ def ingest_marker(env_file, origin, state):
         query_time = result['data']['result'][0]['value'][0]
         proof = {'marker': marker, 'timestamp': timestamp, 'query_time': query_time}
         verify_marker(env_file, origin, proof)
+        ingested = True
     finally:
-        textfile.unlink(missing_ok=True)
-        subprocess.run(['docker', 'rm', '-f', producer], check=True, capture_output=True)
+        cleanup_failed = False
+        try:
+            textfile.unlink(missing_ok=True)
+        except OSError:
+            cleanup_failed = True
+        try:
+            result = subprocess.run(['docker', 'rm', '-f', producer], check=False, capture_output=True)
+            cleanup_failed = cleanup_failed or result.returncode != 0
+        except OSError:
+            cleanup_failed = True
+        if cleanup_failed:
+            print('marker cleanup failed; inspect disposable producer ' + producer, file=sys.stderr)
+            if ingested:
+                raise RuntimeError('marker cleanup failed')
     print('ok: unique marker log and metric ingested; producers removed', flush=True)
     return proof
 
@@ -137,7 +151,7 @@ def ingest_marker(env_file, origin, state):
 def verify_marker(env_file, origin, proof):
     _, _, eventually = client(env_file, origin)
     query = urllib.parse.urlencode({
-        'query': '{job="docker"} |= "checkpoint-marker-' + proof['marker'] + '"',
+        'query': '{job="' + proof.get('log_job', 'docker') + '"} |= "checkpoint-marker-' + proof['marker'] + '"',
         'start': str(proof['timestamp'] - 60 * 10**9), 'end': str(proof['timestamp'] + 120 * 10**9),
     })
     eventually('/api/datasources/proxy/uid/loki/loki/api/v1/query_range?' + query,

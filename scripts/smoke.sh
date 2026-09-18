@@ -24,6 +24,8 @@ if docker network inspect "$network" >/dev/null 2>&1; then
 fi
 work=$(mktemp -d)
 env_file="$work/.env"
+# Resolve before installing the trap so cleanup itself needs no Python import.
+volumes=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import bootstrap; print(" ".join(bootstrap.VOLUMES))')
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
@@ -31,7 +33,7 @@ cleanup() {
     docker compose --env-file "$env_file" ps -a >&2 || true
   fi
   docker compose --env-file "$env_file" down -v --remove-orphans >/dev/null || result=1
-  for volume in caddy-data caddy-config grafana-data alloy-data loki-data tempo-data mimir-data rustfs-data; do
+  for volume in $volumes; do
     name="${COMPOSE_PROJECT_NAME}_$volume"
     if docker volume inspect "$name" >/dev/null 2>&1; then
       docker volume rm "$name" >/dev/null || result=1

@@ -307,7 +307,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     template = (root / args.template).resolve()
     compose = root / "compose.yaml"
 
-    if shutil.which("docker") is None and not args.render_only:
+    installation = env_file == (root / ".env").resolve()
+    if shutil.which("docker") is None and (installation or not args.render_only):
         raise Refused("docker_missing", "install Docker with the Compose plugin")
 
     lock_path = env_file.with_name(env_file.name + ".lock")
@@ -341,7 +342,6 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         if not state_dir.is_absolute():
             state_dir = root / state_dir
         data_dir = state_dir / "installation"
-        installation = env_file == (root / ".env").resolve()
 
         # Scratch render-only stays offline. Installation bootstrap checks volumes
         # even when all secrets are present, before writing any installation state.

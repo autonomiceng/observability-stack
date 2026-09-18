@@ -48,7 +48,7 @@ Test delivery from Grafana after provisioning.
 | Gateway Checkpoint age | `time() - lg_checkpoint_timestamp_seconds{job="llm-gateway-checkpoints"} > bool 93600` for 5m. |
 | Gateway Checkpoint failure | `lg_checkpoint_success{job="llm-gateway-checkpoints"} == bool 0` for 5m. |
 | Gateway archiver failure | `increase(pg_stat_archiver_failed_count{job="llm-gateway-postgres"}[15m]) > bool 0` for 5m. |
-| Scrape target down | `up{job=~"llm-gateway(-valkey|-postgres|-checkpoints)?|backplane"} == bool 0` for 5m. `bool` returns 1 for a failed target into the > 0 threshold. An empty backplane token or `OB_SCRAPE_GATEWAY=false` removes that target. |
+| Scrape target down | `up{job=~"llm-gateway(-valkey\|-postgres\|-checkpoints)?\|backplane"} == bool 0` for 5m. `bool` returns 1 for a failed target into the > 0 threshold. An empty backplane token or `OB_SCRAPE_GATEWAY=false` removes that target. |
 
 Container restart detection is pending a producer for
 `container_started_at_seconds{compose_project,service,container}` sourced from Docker
@@ -86,8 +86,9 @@ uses LiteLLM's request counter, total request latency histogram and spend counte
 follow the gateway's exposed `model` series.
 
 Tempo stays empty until a producer opts in. Check `/health/tempo` for readiness; successful
-readiness alone does not prove a trace reached storage. The Smoke Contract does not yet
-exercise OTLP ingestion or retention over multiple days.
+readiness alone does not prove a trace reached storage. The S3 Smoke Contract sends an OTLP
+trace, waits for Tempo objects, and queries the original trace after RustFS restarts. It does not exercise retention over multiple days
+or force that query to bypass Tempo's local state.
 
 ## Resource failure
 

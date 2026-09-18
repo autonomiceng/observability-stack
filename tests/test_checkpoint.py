@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 import checkpoint
@@ -107,3 +107,143 @@ class CheckpointTests(unittest.TestCase):
             with patch.object(checkpoint.shutil, 'disk_usage', return_value=SimpleNamespace(free=101)):
                 with self.assertRaisesRegex(RuntimeError, 'free space'):
                     checkpoint.backup(stack)
+
+
+class BackupAttestationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.stack = object.__new__(checkpoint.Stack)
+        stack = self.stack
+        stack.settings = {'OB_BACKUP_KEEP': '1'}
+        stack.project, stack.mode = 'test', 'filesystem'
+        stack.command = ['docker', 'compose']
+        stack.writers, stack.volumes = ('loki',), ('loki-data',)
+        stack.backups, stack.state = root / 'backups', root / 'state'
+        stack.backups.mkdir()
+        marker = stack.state / 'installation' / 'storage-mode'
+        marker.parent.mkdir(parents=True)
+        marker.write_text('filesystem')
+        stack.env_file = root / '.env'
+        stack.env_file.write_text('OB_GRAFANA_ADMIN_PASSWORD=secret')
+        stack.config = {
+            'services': {'loki': {'image': 'pinned', 'volumes': [
+                {'type': 'volume', 'source': 'loki-data', 'target': '/loki'},
+                {'type': 'bind', 'source': '/config', 'target': '/etc/loki', 'read_only': True}]}},
+            'volumes': {'loki-data': {'name': 'test_loki-data'}}}
+        self.container = {'Id': 'id', 'Config': {'Image': 'pinned', 'Labels': {
+            'com.docker.compose.service': 'loki', 'com.docker.compose.project': 'test'}},
+            'Mounts': [{'Type': 'volume', 'Name': 'test_loki-data', 'Destination': '/loki', 'RW': True},
+                       {'Type': 'bind', 'Source': '/config', 'Destination': '/etc/loki', 'RW': False}]}
+        self.calls, self.stopped = [], False
+        self.missing_volume, self.foreign_consumer = False, False
+        self.restart_error = False
+        def runner(argv):
+            self.calls.append(argv)
+            output, code = '', 0
+            if argv[:3] == ['docker', 'volume', 'inspect']:
+                code = int(self.missing_volume)
+                output = json.dumps([{'Name': 'test_loki-data'}])
+            elif argv[:2] == ['docker', 'inspect']:
+                self.container['State'] = {'Status': 'exited' if self.stopped else 'running',
+                                           'ExitCode': 0, 'OOMKilled': False}
+                output = json.dumps([self.container])
+            elif argv[:2] == ['docker', 'ps']:
+                output = 'foreign' if self.foreign_consumer else ('' if self.stopped else 'id')
+            elif argv[:2] == ['docker', 'compose']:
+                if argv[2] == 'ps':
+                    output = 'loki' if '--services' in argv else 'id'
+                elif argv[2] == 'stop':
+                    self.stopped = True
+                elif argv[2] == 'start':
+                    self.stopped = False
+                    code = int(self.restart_error)
+            return subprocess.CompletedProcess(argv, code, output, '')
+        stack.runner = runner
+        stack.helper = Mock(side_effect=self.archive)
+        stack.wait_ready = Mock()
+        self.files = patch.object(checkpoint, 'configuration_files', return_value=[])
+        self.files.start()
+        self.addCleanup(self.files.stop)
+
+    def archive(self, mounts, script, key, *args):
+        destination = next(m.split('src=')[1].split(',')[0] for m in mounts if 'dst=/checkpoint' in m)
+        (Path(destination) / (key + '.tar')).write_bytes(b'archive')
+
+    def assert_refused_before_capture(self, message):
+        with self.assertRaisesRegex(RuntimeError, message):
+            checkpoint.backup(self.stack)
+        self.stack.helper.assert_not_called()
+        self.assertFalse(any('stop' in argv for argv in self.calls))
+        self.assertEqual(list(self.stack.backups.iterdir()), [])
+
+    def test_changed_live_mounts_or_pins_refused_before_capture(self):
+        import copy
+        original = copy.deepcopy(self.container)
+        for change in ('prefix', 'bind', 'readonly', 'extra', 'image'):
+            with self.subTest(change=change):
+                self.container = copy.deepcopy(original)
+                if change == 'prefix':
+                    self.container['Mounts'][0]['Name'] = 'old_loki-data'
+                elif change == 'bind':
+                    self.container['Mounts'][1]['Source'] = '/other-config'
+                elif change == 'readonly':
+                    self.container['Mounts'][0]['RW'] = False
+                elif change == 'extra':
+                    self.container['Mounts'].append({'Type': 'volume', 'Name': 'unarchived',
+                                                     'Destination': '/extra', 'RW': True})
+                else:
+                    self.container['Config']['Image'] = 'old-pin'
+                self.assert_refused_before_capture('mount|pins')
+
+    def test_absent_source_volume_never_created_by_archive_helper(self):
+        self.missing_volume = True
+        self.assert_refused_before_capture('failed|volume')
+
+    def test_foreign_consumer_refused_before_capture_and_rechecked_under_fence(self):
+        self.foreign_consumer = True
+        self.assert_refused_before_capture('consumer')
+        self.foreign_consumer = False
+        original = self.stack.stopped_cleanly
+        def stopped(service):
+            original(service)
+            self.foreign_consumer = True
+        self.stack.stopped_cleanly = stopped
+        with self.assertRaisesRegex(RuntimeError, 'consumer'):
+            checkpoint.backup(self.stack)
+        self.stack.helper.assert_not_called()
+        self.assertTrue(any('start' in argv for argv in self.calls))
+
+    def test_resume_or_readiness_failure_preserves_success_timestamp_and_retention(self):
+        textfile = self.stack.state / 'textfile'
+        textfile.mkdir()
+        metric = textfile / 'checkpoint.prom'
+        metric.write_text('previous-success')
+        old = self.stack.backups / '20260917T020000000000Z'
+        old.mkdir()
+        (old / 'manifest.json').write_text('{}')
+        for failure in ('start', 'readiness'):
+            with self.subTest(failure=failure):
+                self.restart_error = failure == 'start'
+                self.stack.wait_ready.side_effect = RuntimeError('not healthy') if failure == 'readiness' else None
+                with self.assertRaises(RuntimeError):
+                    checkpoint.backup(self.stack)
+                self.assertEqual(metric.read_text(), 'previous-success')
+                self.assertTrue(old.exists())
+                self.assertGreater(len(checkpoint.complete_checkpoints(self.stack.backups)), 1)
+
+    def test_success_and_pruning_only_after_healthy_resume(self):
+        old = self.stack.backups / '20260917T020000000000Z'
+        old.mkdir()
+        (old / 'manifest.json').write_text('{}')
+        def ready():
+            self.assertTrue(old.exists())
+            self.assertFalse((self.stack.state / 'textfile/checkpoint.prom').exists())
+            self.assertFalse(self.stopped)
+        self.stack.wait_ready.side_effect = ready
+        destination = checkpoint.backup(self.stack)
+        self.stack.wait_ready.assert_called_once()
+        self.assertTrue((destination / 'manifest.json').exists())
+        self.assertFalse(old.exists())
+        self.assertIn('stack_checkpoint_last_success', (self.stack.state / 'textfile/checkpoint.prom').read_text())

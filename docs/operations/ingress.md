@@ -61,9 +61,16 @@ the project's default network, at ports 4317 (gRPC) and 4318 (HTTP). Opt-in prod
 join that network to send traces; the Platform Network cannot reach those listeners.
 
 `OB_TRUSTED_PROXIES` is empty for standalone ingress. Behind platform-edge, set it to
-only the edge's platform subnet. Detailed `/versions.json` and upstream health bodies
-require the direct peer to match `OB_OPERATOR_ALLOW`, which defaults to loopback.
-Other callers receive status-only responses. Docker port forwarding may present the bridge
-address as the peer even for host loopback requests; add only a verified operator source
-if detailed local responses are needed. Allowing an edge address grants details to all
-requests forwarded by that edge, so the edge must enforce its own operator restrictions.
+only the edge's actual source IPs or dedicated proxy subnet. Detailed `/versions.json`,
+upstream health bodies and alert-delivery diagnostics require the parsed client IP to match
+`OB_OPERATOR_ALLOW`, which defaults to loopback. Other callers receive status-only responses.
+Caddy accepts forwarded client IPs only from configured trusted proxies and parses the chain
+from right to left. The edge must correctly overwrite or append the connecting client's IP.
+Untrusted peers cannot gain access by supplying an `X-Forwarded-For` header.
+
+This changes the previous direct-peer allowlist behavior: an allowlisted edge address no
+longer grants operator details to every client it forwards. List the actual operator client
+addresses in `OB_OPERATOR_ALLOW`, separately from proxy trust in `OB_TRUSTED_PROXIES`.
+With no trusted proxy, the client address remains the connection's direct peer. Docker port
+forwarding may present the bridge address even for host loopback requests; add only a verified
+operator source if detailed local responses are needed.
