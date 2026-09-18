@@ -46,6 +46,14 @@ volumes are regenerated during restore; Public Mode recovery needs DNS/TLS acces
 Generated console metadata, Grafana provisioning/SMTP configuration and textfile metrics
 are rebuilt from the matching checkout and original env, not archived.
 
+Archive validation accepts only regular files and directories. An archived hardlink, symlink,
+FIFO, device or other special-file entry produces `FAIL: unsupported archive member`.
+Capture then aborts without a completed manifest and attempts to resume writers. This
+restriction also applies to restore; the live drills do not establish compatibility with
+all aged production volume layouts. Inspect the incomplete archive privately to identify
+the entry. Do not delete or flatten production files to force validation to pass; retain
+the source volumes and use a backup procedure that preserves the required file semantics.
+
 Pause direct producers before backup. The default fence stops Caddy, Alloy, Grafana,
 Loki, Mimir and Tempo in that order, then RustFS in S3 mode, with 120 seconds per service.
 Before stopping anything, backup verifies the live image pins and all volume/bind mounts
@@ -53,21 +61,26 @@ against resolved Compose, requires every source volume to exist, and rejects oth
 consumers of those volumes. Volume existence and consumers are checked again under the
 fence before archiving and before publishing the manifest. Every stop must reach exit 0 without `OOMKilled`; forced
 kills, missing containers and unsuccessful exits abort before a completed manifest.
-`--stop-timeout SECONDS` increases the grace period for larger stores. Do not run Compose
+`--stop-timeout SECONDS` sets each service's stop grace and must be a positive integer.
+Tempo quiescence has a separate budget of `max(120, SECONDS)` seconds; a short stop grace
+never shortens its 35-second quiet window. Do not run Compose
 changes or independent writers during capture. Env and repository locks exclude concurrent
 bootstrap and Checkpoint operations through these scripts, not direct Docker commands.
 
 The script attempts to resume all fenced services on success, failure or catchable interruption.
-It starts services, then polls within a 120-second resumption deadline, retrying transient
-Docker inspection failures and restarting stopped writers. Missing writers are recreated
+After a successful capture, resumption has a 120-second budget. After failure or interruption,
+it adds a settle window of `S = --stop-timeout + 10` seconds to watch for late stops, even
+when writers initially appear healthy. It retries transient Docker inspection failures and
+restarts stopped writers. Missing writers are recreated
 from the resolved Compose configuration. An interrupted Compose stop can finish on the daemon
 after its CLI exits, so resumption rechecks container state after HTTP probes and retries late
 stops. Permanent failures exhaust the deadline and fail capture's overall result.
 Every writer must be running, and every configured Docker healthcheck must be healthy,
 including RustFS in S3 mode. Distroless Backends without Docker healthchecks require running
 state plus HTTP readiness. All five HTTP probes must pass before publishing the success
-timestamp or pruning older Checkpoints. An in-flight HTTP probe can extend the deadline by
-its bounded request/retry interval.
+timestamp or pruning older Checkpoints. An in-flight HTTP probe can extend the final deadline
+by up to approximately 8 seconds (5-second request timeout plus 3-second retry sleep).
+The shared deadline is checked before each probe; this overrun is not multiplied by five.
 
 A resumption failure preserves the previous timestamp and retention set. A completed manifest
 remains a usable recovery artifact; the failure diagnostic prints its path. If capture and
@@ -79,11 +92,30 @@ so terminal process-group signals cannot cancel them.
 Archive helpers have unique names and ownership labels. Creation completes before honoring
 an interruption; cleanup verifies ownership and removes the helper by container ID before
 resuming services. An unknown preexisting container is never removed. A cleanup failure is
-reported; inspect any surviving helper before starting another capture.
+fatal to quiescence, which creates no further helpers. The original helper command error
+is retained in the diagnostic and exception chain when cleanup also fails. A deferred
+interruption still aborts after cleanup is attempted, even when the command failed.
+Inspect any surviving helper privately before starting another capture.
 
 For a systemd backup service, set `KillMode=mixed`: its initial SIGTERM reaches the main
-Checkpoint process, allowing cleanup and resumption. Size `TimeoutStopSec` to cover helper
-creation/cleanup and the resumption deadline, with margin for the host's observed latency.
+Checkpoint process, allowing cleanup and resumption. Size `TimeoutStopSec` from the time
+SIGTERM is sent, including deferred helper creation/cleanup and the full failure-resumption
+allowance. With stop grace `t`, the initial Compose start has up to `120 + S` seconds,
+where `S = t + 10`. Polling retains the original deadline if start finishes within 120
+seconds; otherwise it still gets a full `S` seconds. Thus the configured worst-case
+resumption allowance is `120 + 2S = 2t + 140` seconds: **380 seconds at the default `t=120`**.
+A prompt initial start usually leaves a total of 250 seconds, but that is not the worst case.
+Allow more than 380 seconds at defaults, plus the final HTTP overrun, helper/control-operation
+time and scheduling margin. The daemon's late stop overlaps the settle window; do not add
+another full service stop grace to this calculation.
+
+There is no finite guaranteed wall-clock maximum: helper creation and ownership-checked
+cleanup wait for Docker, and these control operations can stall. The complete capture also
+includes six sequential service stop graces (seven in S3), quiescence of `max(120, t)`, and
+unbounded archive/fsync time before resumption. At defaults, the configured fence plus
+worst-case failure resumption sums to 1,220 seconds in filesystem mode or 1,340 seconds in S3,
+excluding copies, control operations and HTTP overrun. These whole-run allowances are
+separate from systemd's post-SIGTERM `TimeoutStopSec`.
 A separate process session does not escape a systemd cgroup. `KillMode=control-group`, explicit
 cgroup-wide signals, and systemd's final SIGKILL can still terminate resume children.
 SIGKILL or host loss prevents cleanup: inspect the incomplete directory and any owned helper,
@@ -218,7 +250,8 @@ the connected-clients sample must still confirm the live frontend.
 The queue must remain empty across successful observations for 35 seconds before Tempo
 is stopped. Polls are one second apart, plus probe overhead. A busy queue, missing/invalid
 frontend metrics or failed fetch resets that window. The overall quiescence budget is
-`--stop-timeout` (120 seconds by default), separate from the subsequent stop grace.
+`max(120, --stop-timeout)` seconds, separate from the subsequent stop grace. Cleanup failures
+and interruptions abort immediately after cleanup is attempted instead of retrying probes.
 Expiry aborts before stopping Tempo or archiving and attempts to resume earlier services.
 Tempo must still stop with exit zero and without OOM. Queue length does not measure
 executing queries, and sampling cannot exclude activity between probes. Keep direct query

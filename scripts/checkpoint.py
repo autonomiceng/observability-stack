@@ -30,6 +30,10 @@ class Interrupted(RuntimeError):
     pass
 
 
+class CleanupFailed(RuntimeError):
+    pass
+
+
 def checked(argv, runner=bootstrap.run):
     result = runner(argv)
     if result.returncode:
@@ -111,7 +115,8 @@ class Stack:
         label = 'observability.checkpoint.helper'
         pending = []
         handlers = {}
-        failed = False
+        primary = None
+        cleanup_error = None
         runner = self.runner
         if runner is bootstrap.run:
             runner = lambda argv: subprocess.run(argv, text=True, capture_output=True,
@@ -139,8 +144,8 @@ class Stack:
                         argv, text=True, capture_output=True, check=False,
                         start_new_session=True, timeout=remaining)
             return checked(['docker', 'start', '-a', name], start_runner)
-        except BaseException:
-            failed = True
+        except BaseException as error:
+            primary = error
             raise
         finally:
             try:
@@ -159,15 +164,17 @@ class Stack:
                         if len(containers) != 1 or containers[0]['Config']['Labels'].get(label) != token:
                             raise RuntimeError('Checkpoint helper ownership mismatch; cleanup refused')
                         checked(['docker', 'rm', '-f', containers[0]['Id']], runner)
-                except BaseException:
-                    if not failed:
-                        raise
-                    print('FAIL: Checkpoint helper cleanup also failed; inspect containers privately', file=sys.stderr)
+                except BaseException as error:
+                    cleanup_error = error
+                    print('FAIL: Checkpoint helper cleanup failed; inspect containers privately', file=sys.stderr)
                 finally:
                     for signum, handler in handlers.items():
                         signal.signal(signum, handler)
-            if pending and not failed:
-                raise Interrupted('interrupted; Checkpoint helper cleaned up')
+            if pending and not isinstance(primary, (Interrupted, KeyboardInterrupt)):
+                raise Interrupted('interrupted; Checkpoint helper cleanup attempted') from primary
+            if cleanup_error is not None and not isinstance(primary, (Interrupted, KeyboardInterrupt)):
+                message = str(primary) if primary is not None else 'Checkpoint helper cleanup failed'
+                raise CleanupFailed(message) from (primary if primary is not None else cleanup_error)
 
     def quiesce_tempo(self, timeout=120, sleep=time.sleep):
         deadline = time.monotonic() + timeout
@@ -222,7 +229,7 @@ class Stack:
                         return
                 else:
                     quiet_since = None
-            except Interrupted:
+            except (Interrupted, CleanupFailed):
                 raise
             except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired):
                 quiet_since = None
@@ -361,6 +368,8 @@ class Stack:
                         continue
                 if not ready:
                     probes_passed = False
+            except Interrupted:
+                raise
             except (RuntimeError, bootstrap.Refused, subprocess.TimeoutExpired) as error:
                 last = error
                 probes_passed = False
@@ -378,6 +387,8 @@ class Stack:
             # Start can fail while an earlier stop is still in flight; polling retries it.
             try:
                 self.dc('start', *reversed(stopped))
+            except Interrupted:
+                raise
             except (RuntimeError, subprocess.TimeoutExpired):
                 pass
             self.wait_ready(restart=True, timeout=max(0, deadline - time.monotonic() - settle), settle=settle)
@@ -406,6 +417,8 @@ def prune_checkpoints(directory, keep):
 
 
 def backup(stack, timeout=120, sleep=time.sleep):
+    if timeout < 1:
+        raise RuntimeError('--stop-timeout must be a positive integer')
     keep = int(stack.settings.get('OB_BACKUP_KEEP', '7'))
     if keep < 1:
         raise RuntimeError('OB_BACKUP_KEEP must be a positive integer')
@@ -426,16 +439,16 @@ def backup(stack, timeout=120, sleep=time.sleep):
     handlers = {}
     def interrupt(signum, frame):
         nonlocal interrupted
-        if not interrupted and not resuming and not capture_failed and sys.exc_info()[0] is None:
+        if not interrupted and not resuming and not capture_failed:
             interrupted = True
             raise Interrupted('interrupted; resuming fenced services')
-    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-        handlers[signum] = signal.signal(signum, interrupt)
     try:
+        for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            handlers[signum] = signal.signal(signum, interrupt)
         for service in stack.writers:
             if service == 'tempo':
                 # Tempo 3.0's 30s queue cleanup timer stops on SIGTERM.
-                stack.quiesce_tempo(timeout=timeout, sleep=sleep)
+                stack.quiesce_tempo(timeout=max(120, timeout), sleep=sleep)
             stopped.append(service)
             stack.dc('stop', '-t', str(timeout), service)
             stack.stopped_cleanly(service)
@@ -568,6 +581,8 @@ def main():
     for command in (capture, recover):
         command.add_argument('--env-file', type=Path, default=ROOT / '.env')
     args = parser.parse_args()
+    if args.command == 'backup' and args.stop_timeout < 1:
+        parser.error('--stop-timeout must be a positive integer')
     os.umask(0o077)
     with args.env_file.with_name(args.env_file.name + '.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

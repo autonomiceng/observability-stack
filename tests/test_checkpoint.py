@@ -336,7 +336,7 @@ class BackupAttestationTests(unittest.TestCase):
         events, helpers, clock, sleep = self.tempo_fence(
             lambda now: 'tempo_query_frontend_connected_clients 2\n')
         with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]):
-            destination = checkpoint.backup(self.stack, sleep=sleep)
+            destination = checkpoint.backup(self.stack, timeout=1, sleep=sleep)
         self.assertEqual([name for name, _ in events if name != 'probe'], list(self.stack.writers))
         self.assertEqual(events[5], ('probe', 0))
         self.assertEqual(events[-2:], [('tempo', 35), ('rustfs', 35)])
@@ -387,7 +387,7 @@ class BackupAttestationTests(unittest.TestCase):
         with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]), \
                 self.assertRaisesRegex(RuntimeError, 'Tempo.*quiescence.*deadline'):
             checkpoint.backup(self.stack, timeout=40, sleep=sleep)
-        self.assertEqual(clock[0], 40)
+        self.assertEqual(clock[0], 120)
         self.assertEqual(next(event for event in events if event[0] == 'probe'), ('probe', 5))
         self.assertNotIn('tempo', [name for name, _ in events])
         self.assertNotIn('rustfs', [name for name, _ in events])
@@ -395,6 +395,100 @@ class BackupAttestationTests(unittest.TestCase):
         self.assertEqual(checkpoint.complete_checkpoints(self.stack.backups), [old])
         self.assertEqual(metric.read_text(), 'previous-success')
         self.assertFalse(self.stopped)
+
+    def test_signal_during_failed_probe_create_aborts_after_owned_cleanup(self):
+        events, helpers, clock, sleep = self.tempo_fence(
+            lambda now: 'tempo_query_frontend_connected_clients 2\n')
+        runner = self.stack.runner
+        creates = []
+        signal_in_create = True
+        def fail_create(argv):
+            result = runner(argv)
+            if argv[:2] == ['docker', 'create']:
+                creates.append(result.stdout)
+                if signal_in_create:
+                    signal.raise_signal(signal.SIGTERM)
+                result.returncode = 1
+            return result
+        self.stack.runner = fail_create
+        with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]), \
+                self.assertRaises(checkpoint.Interrupted) as raised:
+            checkpoint.backup(self.stack, sleep=sleep)
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(helpers, {})
+        self.assertIn('operation failed', str(raised.exception.__cause__))
+        self.assertFalse(any(name in ('probe', 'tempo', 'rustfs') for name, _ in events))
+        self.assertFalse(checkpoint.complete_checkpoints(self.stack.backups))
+        self.assertFalse(self.stopped)
+        # A signal delivered inside the retry handler must still cancel the capture.
+        signal_in_create = False
+        def trace(frame, event, arg):
+            if (event == 'line' and frame.f_code.co_name == 'quiesce_tempo'
+                    and isinstance(sys.exc_info()[1], RuntimeError)):
+                signal.raise_signal(signal.SIGTERM)
+            return trace
+        with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]), \
+                self.assertRaises(checkpoint.Interrupted):
+            sys.settrace(trace)
+            try:
+                checkpoint.backup(self.stack, sleep=sleep)
+            finally:
+                sys.settrace(None)
+        self.assertEqual(len(creates), 2)
+        self.assertEqual(helpers, {})
+        self.assertFalse(checkpoint.complete_checkpoints(self.stack.backups))
+        self.assertFalse(self.stopped)
+
+    def test_probe_cleanup_failure_aborts_without_creating_more_helpers(self):
+        def metrics(now):
+            raise RuntimeError('probe failed first')
+        events, helpers, clock, sleep = self.tempo_fence(metrics)
+        runner = self.stack.runner
+        def fail_cleanup(argv):
+            if argv[:3] == ['docker', 'rm', '-f']:
+                return subprocess.CompletedProcess(argv, 1, '', 'private daemon diagnostic')
+            return runner(argv)
+        self.stack.runner = fail_cleanup
+        with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]), \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostic, \
+                self.assertRaisesRegex(checkpoint.CleanupFailed, 'probe failed first') as raised:
+            checkpoint.backup(self.stack, sleep=sleep)
+        self.assertEqual(str(raised.exception.__cause__), 'probe failed first')
+        self.assertEqual(len(helpers), 1)
+        self.assertEqual([event for event in events if event[0] == 'probe'], [('probe', 0)])
+        self.assertFalse(any(name in ('tempo', 'rustfs') for name, _ in events))
+        self.assertIn('cleanup', diagnostic.getvalue())
+        self.assertNotIn('private daemon diagnostic', diagnostic.getvalue())
+        self.assertFalse(checkpoint.complete_checkpoints(self.stack.backups))
+        self.assertFalse(self.stopped)
+
+    def test_readiness_propagates_interrupted_without_retrying(self):
+        interrupted = checkpoint.Interrupted('operator cancelled readiness')
+        del self.stack.wait_ready
+        with patch.object(checkpoint.bootstrap, 'wait_ready', side_effect=interrupted) as probe, \
+                patch.object(checkpoint.time, 'sleep') as sleep, \
+                patch.object(checkpoint.time, 'monotonic', side_effect=range(10)), \
+                self.assertRaises(checkpoint.Interrupted) as raised:
+            self.stack.wait_ready(timeout=3)
+        self.assertIs(raised.exception, interrupted)
+        self.assertEqual(probe.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_invalid_stop_timeout_rejected_before_env_lock_or_docker(self):
+        for timeout in (0, -1):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesRegex(RuntimeError, 'positive'):
+                    checkpoint.backup(self.stack, timeout=timeout, sleep=lambda _: None)
+                with patch.object(sys, 'argv', ['checkpoint.py', 'backup', '--stop-timeout', str(timeout),
+                                               '--env-file', str(self.stack.env_file)]), \
+                        contextlib.redirect_stderr(io.StringIO()) as diagnostic, \
+                        self.assertRaises(SystemExit) as raised:
+                    checkpoint.main()
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn('positive', diagnostic.getvalue())
+                self.assertFalse(self.stack.env_file.with_name(self.stack.env_file.name + '.lock').exists())
+        self.assertEqual(self.calls, [])
+        self.assertEqual(list(self.stack.backups.iterdir()), [])
 
     def test_resume_recovers_late_stop_missing_writer_and_waits_for_rustfs_health(self):
         stack = self.stack
