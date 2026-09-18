@@ -1,0 +1,23 @@
+# Profiles add services; this override changes storage on the existing services.
+x-s3-env: &s3-env
+  OB_S3_ACCESS_KEY: ${OB_S3_ACCESS_KEY:?run scripts/bootstrap.py}
+  OB_S3_SECRET_KEY: ${OB_S3_SECRET_KEY:?run scripts/bootstrap.py}
+x-s3-depends: &s3-depends
+  rustfs-init:
+    condition: service_completed_successfully
+services:
+  loki:
+    environment: *s3-env
+    depends_on: *s3-depends
+    volumes:
+      - ./docker/loki/s3.yaml:/etc/loki/config.yaml:ro
+  tempo:
+    environment: *s3-env
+    depends_on: *s3-depends
+    volumes:
+      - ./docker/tempo/s3.yaml:/etc/tempo/config.yaml:ro
+  mimir:
+    environment: *s3-env
+    depends_on: *s3-depends
+    volumes:
+      - ./docker/mimir/s3.yaml:/etc/mimir/config.yaml:ro

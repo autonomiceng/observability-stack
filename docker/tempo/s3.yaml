@@ -1,0 +1,33 @@
+server:
+  http_listen_port: 3200
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+storage:
+  trace:
+    backend: s3
+    wal:
+      path: /var/tempo/wal
+    s3:
+      endpoint: rustfs:9000
+      bucket: tempo
+      access_key: ${OB_S3_ACCESS_KEY}
+      secret_key: ${OB_S3_SECRET_KEY}
+      forcepathstyle: true
+      insecure: true
+backend_scheduler:
+  local_work_path: /var/tempo/work
+  provider:
+    compaction:
+      compaction:
+        block_retention: 168h
+backend_worker:
+  compaction:
+    block_retention: 168h
+usage_report:
+  reporting_enabled: false

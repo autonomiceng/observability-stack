@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Observability Stack</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">Observability Stack</a>
+    <nav aria-label="Stack">
+      <a href="https://github.com/autonomiceng/observability-stack">Source</a>
+    </nav>
+  </header>
+
+  <main>
+    <section aria-labelledby="apps">
+      <h1 id="apps">Applications</h1>
+      <ol class="cards">
+        <li data-service="grafana" data-host="grafana">
+          <div class="row">
+            <h2><a data-link="grafana">Grafana</a></h2>
+            <span class="badge" data-badge>checking</span>
+          </div>
+          <p>Logs, metrics, traces and alerts across the host.</p>
+          <dl>
+            <dt>Dashboard</dt><dd><a data-link="grafana" data-path="/d/stacks-overview">Stacks overview</a></dd>
+            <dt>Logs</dt><dd><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22loki%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D">Explore logs</a></dd>
+            <dt>Metrics</dt><dd><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22mimir%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D">Explore metrics</a></dd>
+            <dt>Traces</dt><dd><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22tempo%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D">Explore traces</a></dd>
+            <dt>Version</dt><dd data-version="grafana">…</dd>
+          </dl>
+        </li>
+        <li data-service="alerts"><div class="row"><h2>Alert delivery</h2><span class="badge" data-badge>checking</span></div></li>
+      </ol>
+    </section>
+    <section aria-labelledby="platform">
+      <h1 id="platform">On this host</h1>
+      <p class="muted">Optional stacks. Configure their console URLs in .env to enable links.</p>
+      <ol class="cards">
+        <li data-service="gateway" data-optional>
+          <div class="row"><h2><a data-external="gateway">LLM Gateway</a></h2><span class="badge" data-badge>checking</span></div>
+          <p>Routing, budgets and LLM traces.</p>
+        </li>
+        <li data-service="backplane" data-optional>
+          <div class="row"><h2><a data-external="backplane">Agent Backplane</a></h2><span class="badge" data-badge>checking</span></div>
+          <p>Shared state, queues and approvals for agents.</p>
+        </li>
+      </ol>
+    </section>
+    <section aria-labelledby="datastores">
+      <h1 id="datastores">Collector and backends</h1>
+      <p class="muted">Private to Docker networks. Versions show the configured image tags.</p>
+      <table><tbody>
+        <tr data-service="alloy"><th scope="row">Alloy</th><td data-version="alloy">…</td><td><span class="badge" data-badge>checking</span></td></tr>
+        <tr data-service="loki"><th scope="row">Loki</th><td data-version="loki">…</td><td><span class="badge" data-badge>checking</span></td></tr>
+        <tr data-service="tempo"><th scope="row">Tempo</th><td data-version="tempo">…</td><td><span class="badge" data-badge>checking</span></td></tr>
+        <tr data-service="mimir"><th scope="row">Mimir</th><td data-version="mimir">…</td><td><span class="badge" data-badge>checking</span></td></tr>
+        <tr><th scope="row">Caddy</th><td data-version="caddy">…</td><td></td></tr>
+      </tbody></table>
+    </section>
+  </main>
+  <footer>
+    <span data-checked>Health not checked yet.</span>
+    <span>Pinned <time data-pinned>…</time></span>
+  </footer>
+  <script src="/console.js" defer></script>
+</body>
+</html>

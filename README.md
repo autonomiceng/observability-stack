@@ -1,6 +1,116 @@
 # observability-stack
 
-Logs, metrics and traces for self-hosted platform stacks.
+Logs, metrics and traces for everything on your host, in one Grafana. Self-hosted, one Docker Compose file.
 
-This scaffold establishes project licensing and review configuration.
-The implementation follows in reviewed pull requests.
+[![CI](https://github.com/autonomiceng/observability-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/autonomiceng/observability-stack/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Grafana 13](https://img.shields.io/badge/Grafana-13-F46800)](https://github.com/grafana/grafana)
+[![Alloy 1.19](https://img.shields.io/badge/Alloy-1.19-informational)](https://github.com/grafana/alloy)
+
+## What it is
+
+You run a few Docker stacks on one machine and want to see what they are doing without SSHing in and tailing logs. This stack runs the Grafana LGTM set: Loki for logs, Mimir for metrics, Tempo for traces, and Alloy as the one collector that feeds them.
+
+Alloy discovers host containers, excluding disposable smoke/drill Compose logs and ships its logs with the Compose project and service as labels. Gateway scraping is enabled by default (`OB_SCRAPE_GATEWAY=true`); set it to false when running alone. Backplane scraping is off until `OB_BACKPLANE_OPERATIONS_TOKEN` is set. Self, container, host filesystem, textfile and Backend metrics are always scraped. Grafana comes with the datasources wired, a starter dashboard and a few alert rules.
+
+Everything stores to local volumes by default. An optional profile moves the backends to S3 on RustFS.
+
+## Quick start
+
+You need Docker with the Compose plugin and Python 3.11 or newer. [mise](https://mise.jdx.dev) installs the pinned tools if you use it.
+
+```sh
+git clone https://github.com/autonomiceng/observability-stack.git
+cd observability-stack
+cp .env.example .env
+# Set OB_ALERT_WEBHOOK_URL or OB_ALERT_EMAIL plus OB_SMTP_URL in .env.
+python3 scripts/bootstrap.py
+```
+
+Use `OB_ALERTS=placeholder` explicitly for an installation without delivery; readiness
+then reports `alert_delivery_placeholder`. See [alert setup](docs/operations/maintenance.md).
+
+Bootstrap writes `.env` with a generated Grafana admin password, creates the shared `platform` network, starts everything and waits for it to be healthy. About a minute.
+
+| URL | What |
+| --- | --- |
+| `http://localhost/` | Console: links and live health |
+| `http://grafana.localhost/` | Grafana. User `admin`, password in `.env` |
+
+Open Explore, pick Loki, and query `{compose_project="observability-stack"}`. Your own logs are already there.
+
+If the LLM gateway runs on the same host, its metrics show up under job `llm-gateway` and its logs under `compose_project="llm-gateway-stack"` with no configuration.
+
+To put it on the internet, set a domain, `https` and a public bind address in `.env`. See [ingress](docs/operations/ingress.md).
+
+## What's inside
+
+| Service | Job | Data |
+| --- | --- | --- |
+| Caddy | The only published port. Routes by hostname, serves the console. | volume |
+| Grafana | Dashboards, alerts, one login | volume |
+| Alloy | Collects logs, scrapes metrics, receives OTLP traces | volume |
+| Loki | Logs, 30 days | volume |
+| Mimir | Metrics, 30 days | volume |
+| Tempo | Traces, 7 days | volume |
+| RustFS (optional) | S3 backend for the three stores | volume |
+
+Every image is pinned as `tag@sha256` in `compose.yaml`. Renovate opens the bump; a human merges it after the smoke test passes.
+
+## Built on
+
+| Project | Stars | What we use it for |
+| --- | --- | --- |
+| [Grafana](https://github.com/grafana/grafana) | ![stars](https://img.shields.io/github/stars/grafana/grafana?style=flat) | Dashboards and alerting |
+| [Alloy](https://github.com/grafana/alloy) | ![stars](https://img.shields.io/github/stars/grafana/alloy?style=flat) | The collector |
+| [Loki](https://github.com/grafana/loki) | ![stars](https://img.shields.io/github/stars/grafana/loki?style=flat) | Log storage and search |
+| [Mimir](https://github.com/grafana/mimir) | ![stars](https://img.shields.io/github/stars/grafana/mimir?style=flat) | Metrics storage |
+| [Tempo](https://github.com/grafana/tempo) | ![stars](https://img.shields.io/github/stars/grafana/tempo?style=flat) | Trace storage |
+| [Caddy](https://github.com/caddyserver/caddy) | ![stars](https://img.shields.io/github/stars/caddyserver/caddy?style=flat) | Ingress and automatic HTTPS |
+| [RustFS](https://github.com/rustfs/rustfs) | ![stars](https://img.shields.io/github/stars/rustfs/rustfs?style=flat) | Optional S3 backend |
+| [Docker Compose](https://github.com/docker/compose) | ![stars](https://img.shields.io/github/stars/docker/compose?style=flat) | Running it all |
+
+## The other stacks
+
+This is one of four repos that deploy the same way and work together on one host:
+
+- [llm-gateway-stack](https://github.com/autonomiceng/llm-gateway-stack): LiteLLM and Langfuse. Sends its logs and metrics here.
+- [agent-backplane](https://github.com/autonomiceng/agent-backplane): shared state, queues and approvals for agents. Scraped here when a token is set.
+- [platform-edge](https://github.com/autonomiceng/platform-edge): one Caddy for ports 80 and 443 when more than one stack shares a host.
+
+Each runs alone. Shared conventions are in [docs/conventions.md](docs/conventions.md).
+
+## Day two
+
+- [Ingress and access modes](docs/operations/ingress.md)
+- [Maintenance and version bumps](docs/operations/maintenance.md)
+- [Host sizing and OOM recovery](docs/operations/capacity.md)
+- [Disk-full recovery](docs/operations/disk-full.md)
+- [Backup, restore and recovery drill](docs/operations/backup.md)
+- [Design](docs/DESIGN.md), [vocabulary](CONTEXT.md), [decisions](docs/adr/)
+
+Alert rules that need a metric no stack exposes yet are marked pending in the alert file rather than silently never firing.
+
+## Development
+
+```sh
+scripts/validate.sh                    # static checks and image config validators
+python3 -m unittest discover -s tests  # unit tests, no Docker
+scripts/smoke.sh                       # disposable filesystem install
+SMOKE_PROFILE=s3 scripts/smoke.sh      # RustFS restart persistence
+scripts/backup-drill.sh                # disposable Checkpoint restore and measured RTO
+```
+
+CI runs validation and unit tests on pull requests, pushes to `main`/`develop`, weekly schedules and manual dispatch. Both filesystem and S3 smoke modes run on pull requests, weekly and on manual dispatch. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Security
+
+Report vulnerabilities through the [security policy](SECURITY.md). Alloy reads the Docker socket to discover containers; treat the host it runs on as trusted.
+
+## License
+
+[MIT](LICENSE).
+
+Third-party components: Grafana, Loki, Tempo and Mimir are licensed under AGPLv3;
+Alloy is licensed under Apache-2.0. This repository's MIT license covers its own code
+and configuration; bundled components retain their respective licenses.

@@ -1,0 +1,16 @@
+apiVersion: 1
+contactPoints:
+  - orgId: 1
+    name: configure-delivery
+    receivers:
+      - uid: configure-delivery
+        type: email
+        disableResolveMessage: false
+        settings:
+          addresses: configure@example.invalid
+policies:
+  - orgId: 1
+    receiver: configure-delivery
+    group_by: [grafana_folder, alertname]
+# Bootstrap replaces this template in OB_STATE_DIR/grafana-provisioning.
+# Keeping this placeholder requires explicit OB_ALERTS=placeholder and reports degraded readiness.

@@ -1,0 +1,245 @@
+# ADR-0001: one host, one collector, filesystem first.
+name: observability-stack
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  caddy:
+    image: caddy:2.11.4@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017
+    restart: unless-stopped
+    pids_limit: 512
+    mem_limit: 256m
+    mem_reservation: 64m
+    logging: *logging
+    ports:
+      - "${OB_BIND_HOST:-127.0.0.1}:${OB_HTTP_PORT:-80}:80"
+      - "${OB_BIND_HOST:-127.0.0.1}:${OB_HTTPS_PORT:-443}:443"
+    environment:
+      OB_SCHEME: ${OB_SCHEME:-http}
+      # Scheme Caddy listens on. Behind platform-edge the public scheme is https
+      # while this Caddy listens on plain http; set OB_LISTEN_SCHEME=http there.
+      OB_LISTEN_SCHEME: ${OB_LISTEN_SCHEME:-${OB_SCHEME:-http}}
+      OB_PUBLIC_DOMAIN: ${OB_PUBLIC_DOMAIN:-localhost}
+      OB_OPERATOR_ALLOW: ${OB_OPERATOR_ALLOW:-127.0.0.1/8 ::1}
+      OB_TRUSTED_PROXIES: ${OB_TRUSTED_PROXIES:-}
+      OB_TLS_ISSUER: ${OB_TLS_ISSUER:-none}
+      OB_GATEWAY_HEALTH_HOST: ${OB_GATEWAY_HEALTH_HOST:-localhost}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./docker/caddy/console:/srv/console:ro
+      - ${OB_STATE_DIR:-./data}/console:/srv/state:ro
+      - ./docker/caddy/health.sh:/etc/caddy/health.sh:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      grafana:
+        condition: service_started
+      alloy:
+        condition: service_started
+      loki:
+        condition: service_started
+      tempo:
+        condition: service_started
+      mimir:
+        condition: service_started
+    # Tempo and Mimir are distroless. Probe their HTTP readiness here.
+    healthcheck:
+      test: ["CMD", "sh", "/etc/caddy/health.sh"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    networks:
+      default:
+      platform:
+        aliases: [ob-gateway]
+
+  grafana:
+    image: grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0
+    restart: unless-stopped
+    pids_limit: 512
+    mem_limit: 1g
+    mem_reservation: 384m
+    logging: *logging
+    environment:
+      OB_ALERT_WEBHOOK_URL: ${OB_ALERT_WEBHOOK_URL:-}
+      OB_ALERT_EMAIL: ${OB_ALERT_EMAIL:-}
+      # Recreate Grafana when bootstrap-rendered SMTP settings change.
+      OB_SMTP_URL: ${OB_SMTP_URL:-}
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${OB_GRAFANA_ADMIN_PASSWORD:?run scripts/bootstrap.py to generate secrets}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: ${OB_SCHEME:-http}://grafana.${OB_PUBLIC_DOMAIN:-localhost}${OB_PUBLIC_PORT_SUFFIX:-}/
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ${OB_STATE_DIR:-./data}/grafana-provisioning:/etc/grafana/provisioning:ro
+      - ${OB_STATE_DIR:-./data}/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      default:
+      platform:
+        aliases: [ob-grafana]
+
+  alloy:
+    image: grafana/alloy:v1.19.2@sha256:b8ec653c44235fbe910879145dac3597d66b0aaecf60bcbbe82580767771a839
+    restart: unless-stopped
+    pids_limit: 512
+    mem_limit: 1g
+    mem_reservation: 512m
+    logging: *logging
+    user: "0:0"
+    # Embedded cAdvisor requires host cgroup/device access for container metrics.
+    privileged: true
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy", "/etc/alloy/config.alloy"]
+    environment:
+      OB_SCRAPE_GATEWAY: ${OB_SCRAPE_GATEWAY:-true}
+      OB_BACKPLANE_OPERATIONS_TOKEN: ${OB_BACKPLANE_OPERATIONS_TOKEN:-}
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy
+      # Docker API access is host-root equivalent even with a read-only socket mount.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/rootfs:ro,rslave
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /dev/disk:/dev/disk:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - ${OB_STATE_DIR:-./data}/textfile:/var/lib/alloy/textfile:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/12345; printf \"GET /-/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3; head -1 <&3 | grep -q \" 200 \"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      default:
+        aliases: [ob-alloy-otlp]
+      platform:
+        aliases: [ob-alloy]
+
+  loki:
+    image: grafana/loki:3.7.7@sha256:d70e4659623f3e109af669cae76fe2a5dd5be54e2298fe8aed380d982fbc2500
+    restart: unless-stopped
+    pids_limit: 512
+    mem_limit: 1536m
+    mem_reservation: 512m
+    logging: *logging
+    command: ["-config.file=/etc/loki/config.yaml", "-config.expand-env=true"]
+    volumes:
+      - ./docker/loki/config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    # Native readiness is probed by Caddy, including distroless image variants.
+
+  tempo:
+    image: grafana/tempo:3.0.3@sha256:0296560ac66f8a3600d7fb3014a52c189d4d9c3549ad6ff441bf2409855d68d5
+    restart: unless-stopped
+    pids_limit: 512
+    mem_limit: 1536m
+    mem_reservation: 512m
+    logging: *logging
+    command: ["-target=all", "-config.file=/etc/tempo/config.yaml", "-config.expand-env=true"]
+    volumes:
+      - ./docker/tempo/config.yaml:/etc/tempo/config.yaml:ro
+      - tempo-data:/var/tempo
+
+  mimir:
+    image: grafana/mimir:3.2.1@sha256:92838f113ba54230014e79bc812e57ca90bb9ebc06e665f59e4f700098c2dd04
+    restart: unless-stopped
+    pids_limit: 512
+    mem_limit: 2g
+    mem_reservation: 1g
+    logging: *logging
+    command: ["-target=all", "-config.file=/etc/mimir/config.yaml", "-config.expand-env=true"]
+    volumes:
+      - ./docker/mimir/config.yaml:/etc/mimir/config.yaml:ro
+      - mimir-data:/data
+
+  rustfs:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    profiles: [s3]
+    restart: unless-stopped
+    pids_limit: 512
+    mem_limit: 2g
+    mem_reservation: 512m
+    logging: *logging
+    command: ["/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: ${OB_S3_ACCESS_KEY:?run scripts/bootstrap.py}
+      RUSTFS_SECRET_KEY: ${OB_S3_SECRET_KEY:?run scripts/bootstrap.py}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  rustfs-init:
+    # Reuse RustFS's curl to create isolated buckets with SigV4, once per install.
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    profiles: [s3]
+    restart: "no"
+    logging: *logging
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      OB_S3_ACCESS_KEY: ${OB_S3_ACCESS_KEY}
+      OB_S3_SECRET_KEY: ${OB_S3_SECRET_KEY}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for bucket in loki tempo mimir-blocks mimir-ruler mimir-alertmanager; do
+          curl --aws-sigv4 aws:amz:us-east-1:s3 -u "$$OB_S3_ACCESS_KEY:$$OB_S3_SECRET_KEY" \
+            -fsS --head "http://rustfs:9000/$$bucket" >/dev/null 2>&1 ||
+          curl --aws-sigv4 aws:amz:us-east-1:s3 -u "$$OB_S3_ACCESS_KEY:$$OB_S3_SECRET_KEY" \
+            -fsS -X PUT "http://rustfs:9000/$$bucket"
+        done
+
+volumes:
+  caddy-data:
+    external: true
+    name: ${OB_VOLUME_PREFIX:-observability-stack}_caddy-data
+  caddy-config:
+    external: true
+    name: ${OB_VOLUME_PREFIX:-observability-stack}_caddy-config
+  grafana-data:
+    external: true
+    name: ${OB_VOLUME_PREFIX:-observability-stack}_grafana-data
+  alloy-data:
+    external: true
+    name: ${OB_VOLUME_PREFIX:-observability-stack}_alloy-data
+  loki-data:
+    external: true
+    name: ${OB_VOLUME_PREFIX:-observability-stack}_loki-data
+  tempo-data:
+    external: true
+    name: ${OB_VOLUME_PREFIX:-observability-stack}_tempo-data
+  mimir-data:
+    external: true
+    name: ${OB_VOLUME_PREFIX:-observability-stack}_mimir-data
+  rustfs-data:
+    external: true
+    name: ${OB_VOLUME_PREFIX:-observability-stack}_rustfs-data
+
+networks:
+  default:
+  platform:
+    name: ${OB_PLATFORM_NETWORK:-platform}
+    external: true

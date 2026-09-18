@@ -1,0 +1,591 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: stack-health
+    folder: Stacks
+    interval: 1m
+    rules:
+      - uid: valkey-memory
+        title: Valkey memory at or above 80 percent
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Uses the gateway Valkey exporter; OB_SCRAPE_GATEWAY enables collection."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: '(redis_memory_used_bytes{job="llm-gateway-valkey"} / redis_memory_max_bytes{job="llm-gateway-valkey"} >= bool 0.8) and (redis_memory_max_bytes{job="llm-gateway-valkey"} > 0)'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+      - uid: backplane-archive-age
+        title: Backplane Postgres archive age exceeds five minutes
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Uses the backplane operations metric for the age of the oldest pending WAL archive."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: 'bp_archive_lag_seconds{job="backplane"} > bool 300'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+      - uid: checkpoint-age
+        title: Checkpoint older than 26 hours
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Backup scripts atomically write this timestamp with a stack label to OB_STATE_DIR/textfile/*.prom."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: 'time() - stack_checkpoint_last_success_timestamp_seconds > bool 93600'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+      - uid: gateway-checkpoint-age
+        title: Gateway Checkpoint older than 26 hours
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Uses the gateway Checkpoint metrics listener."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: 'time() - lg_checkpoint_timestamp_seconds{job="llm-gateway-checkpoints"} > bool 93600'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+      - uid: gateway-checkpoint-failed
+        title: Gateway Checkpoint failed
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Uses the gateway Checkpoint metrics listener."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: 'lg_checkpoint_success{job="llm-gateway-checkpoints"} == bool 0'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+      - uid: gateway-archiver-failures
+        title: Gateway Postgres archive failures
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Postgres failed to archive WAL in the last fifteen minutes."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: 'increase(pg_stat_archiver_failed_count{job="llm-gateway-postgres"}[15m]) > bool 0'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+      - uid: scrape-target-down
+        title: Sibling stack scrape target down
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "The LLM gateway or configured backplane metrics target has been unreachable for five minutes."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              # bool maps a failed scrape's zero to 1 so the > 0 threshold fires.
+              expr: 'up{job=~"llm-gateway(-valkey|-postgres|-checkpoints)?|backplane"} == bool 0'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+
+      - uid: host-disk-bytes
+        title: Host filesystem below 15 percent available bytes
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Includes the Docker data filesystem; see docs/operations/disk-full.md."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: '(node_filesystem_avail_bytes / node_filesystem_size_bytes < bool 0.15) and (node_filesystem_readonly == 0)'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+
+      - uid: host-disk-inodes
+        title: Host filesystem below 15 percent free inodes
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Includes the Docker data filesystem; see docs/operations/disk-full.md."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: '(node_filesystem_files_free / node_filesystem_files < bool 0.15) and (node_filesystem_files > 0) and (node_filesystem_readonly == 0)'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+
+      - uid: loki-ingestion-failures
+        title: Loki ingestion failures
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Rejected log entries or failed push requests per second; inspect Loki and free disk."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: '((sum(rate(loki_discarded_samples_total[5m])) or vector(0)) + (sum(rate(loki_request_duration_seconds_count{route="loki_api_v1_push",status_code=~"4..|5.."}[5m])) or vector(0))) and on() (sum(up{job="loki"}) == 1)'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+
+      - uid: mimir-ingestion-failures
+        title: Mimir ingestion failures
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Rejected samples or failed remote-write requests per second; inspect Mimir and free disk."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: '((sum(rate(cortex_discarded_samples_total[5m])) or vector(0)) + (sum(rate(cortex_request_duration_seconds_count{route="api_v1_push",status_code=~"4..|5.."}[5m])) or vector(0))) and on() (sum(up{job="mimir"}) == 1)'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+
+      - uid: tempo-ingestion-failures
+        title: Tempo ingestion failures
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Discarded spans or failed Collector exports per second; inspect Tempo, producers and free disk."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: '((sum(rate(tempo_discarded_spans_total[5m])) or vector(0)) + (sum(rate(exporter_send_failed_spans_ratio_total{job="alloy"}[5m])) or vector(0))) and on() (sum(up{job="tempo"}) == 1)'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+
+      - uid: alloy-remote-write-backlog
+        title: Alloy remote-write backlog exceeds 10000 samples
+        condition: B
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: "Sustained remote-write backlog; check Mimir health, disk and ingestion limits."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: mimir
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: 'sum(prometheus_remote_storage_samples_pending{job="alloy"}) > bool 10000'
+              instant: true
+              range: false
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    type: last
+                    params: []
+
+# Rules removed from this file. Grafana keeps provisioned rules until told otherwise.
+deleteRules:
+  - orgId: 1
+    uid: container-restarts

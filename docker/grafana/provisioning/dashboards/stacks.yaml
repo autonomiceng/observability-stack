@@ -1,0 +1,11 @@
+apiVersion: 1
+providers:
+  - name: Stacks
+    orgId: 1
+    folder: Stacks
+    folderUid: stacks
+    type: file
+    disableDeletion: false
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,0 +1,53 @@
+multitenancy_enabled: false
+server:
+  http_listen_port: 8080
+ingest_storage:
+  enabled: false
+blocks_storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/blocks
+  tsdb:
+    dir: /data/tsdb
+  bucket_store:
+    sync_dir: /data/tsdb-sync
+compactor:
+  data_dir: /data/compactor
+  sharding_ring:
+    kvstore:
+      store: inmemory
+distributor:
+  ring:
+    kvstore:
+      store: inmemory
+ingester:
+  ring:
+    kvstore:
+      store: inmemory
+    replication_factor: 1
+store_gateway:
+  sharding_ring:
+    kvstore:
+      store: inmemory
+    replication_factor: 1
+ruler_storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/rules
+alertmanager_storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/alerts
+limits:
+  compactor_blocks_retention_period: 30d
+  ingestion_rate: 10000
+  ingestion_burst_size: 20000
+  max_global_series_per_user: 100000
+  max_fetched_series_per_query: 100000
+  max_fetched_chunks_per_query: 200000
+  max_query_parallelism: 2
+querier:
+  max_concurrent: 2
+  timeout: 1m
+usage_stats:
+  enabled: false

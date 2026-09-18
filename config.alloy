@@ -1,0 +1,248 @@
+logging {
+  level = "info"
+}
+
+discovery.docker "host" {
+  host = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.host.targets
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label = "compose_project"
+  }
+  rule {
+    source_labels = ["compose_project"]
+    regex = ".*-(smoke|drill)(-.*|$)"
+    action = "drop"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label = "service"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex = "/(.*)"
+    target_label = "container"
+  }
+  rule {
+    target_label = "job"
+    replacement = "docker"
+  }
+}
+
+loki.source.docker "host" {
+  host = "unix:///var/run/docker.sock"
+  targets = discovery.relabel.containers.output
+  forward_to = [loki.write.local.receiver]
+  refresh_interval = "5s"
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+discovery.relabel "gateway" {
+  targets = [{
+    "__address__" = "lg-litellm:4000",
+    "__enabled" = sys.env("OB_SCRAPE_GATEWAY"),
+  }]
+  rule {
+    source_labels = ["__enabled"]
+    regex = "false"
+    action = "drop"
+  }
+}
+
+prometheus.scrape "gateway" {
+  targets = discovery.relabel.gateway.output
+  job_name = "llm-gateway"
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+discovery.relabel "gateway_valkey" {
+  targets = [{
+    "__address__" = "lg-valkey-exporter:9121",
+    "__enabled" = sys.env("OB_SCRAPE_GATEWAY"),
+  }]
+  rule {
+    source_labels = ["__enabled"]
+    regex = "false"
+    action = "drop"
+  }
+}
+
+prometheus.scrape "gateway_valkey" {
+  targets = discovery.relabel.gateway_valkey.output
+  job_name = "llm-gateway-valkey"
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+discovery.relabel "gateway_postgres" {
+  targets = [{
+    "__address__" = "lg-postgres-exporter:9187",
+    "__enabled" = sys.env("OB_SCRAPE_GATEWAY"),
+  }]
+  rule {
+    source_labels = ["__enabled"]
+    regex = "false"
+    action = "drop"
+  }
+}
+
+prometheus.scrape "gateway_postgres" {
+  targets = discovery.relabel.gateway_postgres.output
+  job_name = "llm-gateway-postgres"
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+discovery.relabel "gateway_checkpoints" {
+  targets = [{
+    "__address__" = "lg-gateway:8081",
+    "__enabled" = sys.env("OB_SCRAPE_GATEWAY"),
+  }]
+  rule {
+    source_labels = ["__enabled"]
+    regex = "false"
+    action = "drop"
+  }
+}
+
+prometheus.scrape "gateway_checkpoints" {
+  targets = discovery.relabel.gateway_checkpoints.output
+  job_name = "llm-gateway-checkpoints"
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+discovery.relabel "backplane" {
+  targets = [{
+    "__address__" = "bp-server:3000",
+    "__token_set" = sys.env("OB_BACKPLANE_OPERATIONS_TOKEN"),
+  }]
+  rule {
+    source_labels = ["__token_set"]
+    regex = "^$"
+    action = "drop"
+  }
+}
+
+prometheus.scrape "backplane" {
+  targets = discovery.relabel.backplane.output
+  job_name = "backplane"
+  bearer_token = sys.env("OB_BACKPLANE_OPERATIONS_TOKEN")
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.scrape "self" {
+  targets = [{ "__address__" = "127.0.0.1:12345" }]
+  job_name = "alloy"
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+// Embedded exporters keep Alloy as the only collector process.
+prometheus.exporter.cadvisor "containers" {
+  docker_only = true
+  store_container_labels = false
+  allowlisted_container_labels = ["com.docker.compose.project", "com.docker.compose.service"]
+}
+
+prometheus.scrape "containers" {
+  targets = prometheus.exporter.cadvisor.containers.targets
+  job_name = "containers"
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.exporter.unix "textfile" {
+  set_collectors = ["textfile", "filesystem"]
+  rootfs_path = "/rootfs"
+  procfs_path = "/rootfs/proc"
+  sysfs_path = "/sys"
+  filesystem {
+    // Keep real Docker data/volume mounts, including custom nested data roots.
+    mount_points_exclude = "^/(dev|proc|sys|run)($|/)"
+  }
+  textfile {
+    directory = "/var/lib/alloy/textfile"
+  }
+}
+
+// Exporter targets carry job="integrations/unix", which would override job_name.
+discovery.relabel "textfile" {
+  targets = prometheus.exporter.unix.textfile.targets
+  rule {
+    target_label = "job"
+    replacement  = "checkpoints"
+  }
+}
+
+prometheus.scrape "textfile" {
+  targets = discovery.relabel.textfile.output
+  job_name = "checkpoints"
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.scrape "backends" {
+  targets = [
+    { "__address__" = "loki:3100", "job" = "loki" },
+    { "__address__" = "mimir:8080", "job" = "mimir" },
+    { "__address__" = "tempo:3200", "job" = "tempo" },
+  ]
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://mimir:8080/api/v1/push"
+  }
+}
+
+// This alias exists only on the project default network.
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "ob-alloy-otlp:4317"
+  }
+  http {
+    endpoint = "ob-alloy-otlp:4318"
+  }
+  output {
+    traces = [otelcol.processor.memory_limiter.default.input]
+  }
+}
+
+// Leave space below the container limit for Docker discovery and Prometheus WAL.
+otelcol.processor.memory_limiter "default" {
+  check_interval = "1s"
+  limit = "768MiB"
+  spike_limit = "192MiB"
+  output {
+    traces = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls {
+      insecure = true
+    }
+  }
+}
