@@ -209,12 +209,42 @@ Grafana and Mimir are in the same failure domain and cannot report their own tot
 
 The pinned Tempo 3.0.3 query frontend removes empty tenant queues every 30 seconds.
 Stopping immediately after a query can strand its shutdown wait because the cleanup
-loop has stopped. Capture fences ingress and Grafana first, then allows 35 seconds
-for that cleanup before stopping Tempo. It still requires exit zero. Do not query
-Tempo directly from another container while the checkpoint fence is active.
-Ordinary service stops have a 45-second grace period for the backend worker;
-a recent query can still require a forced stop outside the coordinated checkpoint
-procedure. Use the checkpoint procedure before upgrades and preserve its source
-volumes until recovery verification completes.
+loop has stopped. After fencing Caddy, Alloy and Grafana and stopping Loki and Mimir,
+capture polls Tempo's `tempo_query_frontend_queue_length` and
+`tempo_query_frontend_connected_clients` metrics. Every tenant queue sample must be zero,
+and connected clients must be positive. Queue samples can be absent before the first query;
+the connected-clients sample must still confirm the live frontend.
 
-Upstream source: [frontend queue lifecycle](https://github.com/grafana/tempo/blob/v3.0.3/modules/frontend/queue/queue.go).
+The queue must remain empty across successful observations for 35 seconds before Tempo
+is stopped. Polls are one second apart, plus probe overhead. A busy queue, missing/invalid
+frontend metrics or failed fetch resets that window. The overall quiescence budget is
+`--stop-timeout` (120 seconds by default), separate from the subsequent stop grace.
+Expiry aborts before stopping Tempo or archiving and attempts to resume earlier services.
+Tempo must still stop with exit zero and without OOM. Queue length does not measure
+executing queries, and sampling cannot exclude activity between probes. Keep direct query
+clients paused throughout the fence; this check is not a guarantee that all queries finished.
+
+Tempo is distroless. Each probe uses the pinned Caddy helper image with `wget` in the network
+namespace of a running Tempo container whose project/service labels have been verified.
+It reads `127.0.0.1:3200/metrics` inside that namespace, including with a remote Docker daemon.
+The helper retains its unique ownership label and is removed before the next probe. Its
+attached command receives the remaining quiescence budget; creation and ownership-checked
+cleanup are allowed to finish so expiry does not abandon a helper. A stalled Docker control
+operation can therefore extend elapsed time beyond the metrics budget.
+
+For manual maintenance, pause direct query clients and stop Caddy, Alloy and Grafana first,
+then run the same bounded check from the checkout, using the installation's env file:
+
+```sh
+PYTHONPATH=scripts python3 -c 'from pathlib import Path; from checkpoint import Stack; Stack(Path(".env")).quiesce_tempo()'
+```
+
+Only after it succeeds, stop Tempo with `docker compose stop -t 120 tempo` and require
+exit zero with `OOMKilled=false`. On failure, keep Tempo running, investigate privately,
+and resume the fenced query sources if abandoning maintenance. Ordinary service stops
+have a 45-second grace period for the backend worker; a recent query can still require
+a forced stop outside this procedure. Preserve source volumes until recovery verification
+completes.
+
+Upstream sources: [frontend metrics](https://github.com/grafana/tempo/blob/v3.0.3/modules/frontend/v1/frontend.go)
+and [queue lifecycle](https://github.com/grafana/tempo/blob/v3.0.3/modules/frontend/queue/queue.go).

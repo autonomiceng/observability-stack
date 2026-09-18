@@ -7,7 +7,8 @@
 3. Run `scripts/validate.sh`, unit tests and `scripts/smoke.sh`, `SMOKE_PROFILE=s3 scripts/smoke.sh`, `SMOKE_PROFILE=filesystem scripts/backup-drill.sh` and `SMOKE_PROFILE=s3 scripts/backup-drill.sh` against the new pins.
 4. Verify the pre-change Checkpoint is complete and replicated off-host before applying the upgrade.
 5. Pause direct producers. Stop query sources with `docker compose stop -t 120 caddy alloy grafana`,
-   wait 35 seconds, then run `docker compose stop -t 120 tempo` before applying the upgrade.
+   run the bounded [Tempo query quiescence check](backup.md#tempo-query-quiescence), then
+   run `docker compose stop -t 120 tempo` only after the check succeeds.
    Inspect Tempo's container state and require exit 0 with `OOMKilled=false`; a forced stop
    is a failed gate. See [Tempo query quiescence](backup.md#tempo-query-quiescence).
    Do not query Tempo directly during this fence. Its ordinary 45-second grace alone cannot

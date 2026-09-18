@@ -6,6 +6,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -23,6 +24,10 @@ import bootstrap
 ROOT = Path(__file__).resolve().parent.parent
 VOLUMES = ('grafana-data', 'loki-data', 'mimir-data', 'tempo-data', 'alloy-data')
 WRITERS = ('caddy', 'alloy', 'grafana', 'loki', 'mimir', 'tempo')
+
+
+class Interrupted(RuntimeError):
+    pass
 
 
 def checked(argv, runner=bootstrap.run):
@@ -99,7 +104,8 @@ class Stack:
     def dc(self, *args):
         return checked(self.command + list(args), self.runner)
 
-    def helper(self, mounts, script, *args):
+    def helper(self, mounts, script, *args, network='none', timeout=None):
+        deadline = time.monotonic() + timeout if timeout is not None else None
         token = uuid.uuid4().hex
         name = f'{self.project}-checkpoint-{token}'
         label = 'observability.checkpoint.helper'
@@ -117,13 +123,22 @@ class Stack:
             for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
                 handlers[signum] = signal.signal(signum, defer)
             checked(['docker', 'create', '--name', name, '--label', f'{label}={token}',
-                     '--network', 'none', '--user', '0', *mounts, '--entrypoint', 'sh', self.image,
+                     '--network', network, '--user', '0', *mounts, '--entrypoint', 'sh', self.image,
                      '-ec', script, 'sh', *args], runner)
             for signum, handler in handlers.items():
                 signal.signal(signum, handler)
             if pending:
-                raise RuntimeError('interrupted; cleaning up Checkpoint helper')
-            return checked(['docker', 'start', '-a', name], runner)
+                raise Interrupted('interrupted; cleaning up Checkpoint helper')
+            start_runner = runner
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError('Checkpoint helper deadline expired')
+                if self.runner is bootstrap.run:
+                    start_runner = lambda argv: subprocess.run(
+                        argv, text=True, capture_output=True, check=False,
+                        start_new_session=True, timeout=remaining)
+            return checked(['docker', 'start', '-a', name], start_runner)
         except BaseException:
             failed = True
             raise
@@ -152,7 +167,67 @@ class Stack:
                     for signum, handler in handlers.items():
                         signal.signal(signum, handler)
             if pending and not failed:
-                raise RuntimeError('interrupted; Checkpoint helper cleaned up')
+                raise Interrupted('interrupted; Checkpoint helper cleaned up')
+
+    def quiesce_tempo(self, timeout=120, sleep=time.sleep):
+        deadline = time.monotonic() + timeout
+        quiet_since = None
+        previous_id = None
+        queue = 'tempo_query_frontend_queue_length'
+        clients = 'tempo_query_frontend_connected_clients'
+        runner = self.runner
+        if runner is bootstrap.run:
+            runner = lambda argv: subprocess.run(
+                argv, text=True, capture_output=True, check=False, start_new_session=True,
+                timeout=max(0.01, deadline - time.monotonic()))
+        while time.monotonic() < deadline:
+            try:
+                ids = checked(self.command + ['ps', '-q', 'tempo'], runner).split()
+                if len(ids) != 1:
+                    raise RuntimeError('Tempo quiescence requires one running container')
+                containers = json.loads(checked(['docker', 'inspect', *ids], runner))
+                if len(containers) != 1:
+                    raise RuntimeError('Tempo quiescence requires one container')
+                container = containers[0]
+                labels = container['Config']['Labels']
+                if (labels.get('com.docker.compose.project') != self.project
+                        or labels.get('com.docker.compose.service') != 'tempo'
+                        or not container['State']['Running']):
+                    raise RuntimeError('Tempo quiescence container ownership/state differs')
+                if container['Id'] != previous_id:
+                    quiet_since = None
+                    previous_id = container['Id']
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                metrics = self.helper([], 'wget -q -T 5 -O - http://127.0.0.1:3200/metrics',
+                                      network='container:' + container['Id'], timeout=remaining)
+                values = {queue: [], clients: []}
+                for line in metrics.splitlines():
+                    for name in values:
+                        if line.startswith(name):
+                            match = re.fullmatch(re.escape(name) + r'(?:\{.*\})?\s+(\S+)', line)
+                            if not match or not math.isfinite(value := float(match[1])):
+                                raise ValueError('invalid Tempo metric sample')
+                            values[name].append(value)
+                # GaugeVec has no samples before the first query. The GaugeFunc confirms
+                # this is a live frontend; queue length does not count executing queries.
+                empty = (len(values[clients]) == 1 and values[clients][0] > 0
+                         and all(value == 0 for value in values[queue]))
+                now = time.monotonic()
+                if empty:
+                    if quiet_since is None:
+                        quiet_since = now
+                    if now - quiet_since >= 35 and now < deadline:
+                        return
+                else:
+                    quiet_since = None
+            except Interrupted:
+                raise
+            except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired):
+                quiet_since = None
+            sleep(min(1, max(0, deadline - time.monotonic())))
+        raise RuntimeError('Tempo query quiescence deadline expired; Tempo was not stopped')
 
     def stopped_cleanly(self, service):
         ids = self.dc('ps', '-aq', service).split()
@@ -241,8 +316,9 @@ class Stack:
         self.dc('up', '-d', '--wait', '--wait-timeout', '300')
         self.wait_ready()
 
-    def wait_ready(self, restart=False, timeout=120):
-        deadline = time.monotonic() + timeout
+    def wait_ready(self, restart=False, timeout=120, settle=0):
+        settle_until = time.monotonic() + settle
+        deadline = settle_until + timeout
         origin = bootstrap.local_origin(self.settings)
         last = RuntimeError('service resumption timed out; inspect service state privately')
         probes_passed = False
@@ -271,7 +347,7 @@ class Stack:
                     if health not in (None, 'healthy') or (required and health != 'healthy'):
                         ready = False
                 if ready:
-                    if probes_passed:
+                    if probes_passed and time.monotonic() >= settle_until:
                         return
                     for service in ('grafana', 'loki', 'mimir', 'tempo', 'alloy'):
                         remaining = deadline - time.monotonic()
@@ -281,17 +357,19 @@ class Stack:
                                              host=self.settings.get('OB_PUBLIC_DOMAIN', 'localhost'))
                     # A stop submitted before interruption may finish after the first start.
                     probes_passed = True
-                    continue
-                probes_passed = False
+                    if not settle:
+                        continue
+                if not ready:
+                    probes_passed = False
             except (RuntimeError, bootstrap.Refused, subprocess.TimeoutExpired) as error:
                 last = error
                 probes_passed = False
             time.sleep(min(1, max(0, deadline - time.monotonic())))
         raise RuntimeError('service resumption/readiness deadline expired; inspect service state privately') from last
 
-    def resume(self, stopped, timeout=120):
+    def resume(self, stopped, timeout=120, settle=0):
         runner = self.runner
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout + settle
         if runner is bootstrap.run:
             self.runner = lambda argv: subprocess.run(
                 argv, text=True, capture_output=True, check=False, start_new_session=True,
@@ -302,7 +380,7 @@ class Stack:
                 self.dc('start', *reversed(stopped))
             except (RuntimeError, subprocess.TimeoutExpired):
                 pass
-            self.wait_ready(restart=True, timeout=max(0, deadline - time.monotonic()))
+            self.wait_ready(restart=True, timeout=max(0, deadline - time.monotonic() - settle), settle=settle)
         finally:
             self.runner = runner
 
@@ -350,16 +428,14 @@ def backup(stack, timeout=120, sleep=time.sleep):
         nonlocal interrupted
         if not interrupted and not resuming and not capture_failed and sys.exc_info()[0] is None:
             interrupted = True
-            raise RuntimeError('interrupted; resuming fenced services')
+            raise Interrupted('interrupted; resuming fenced services')
     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         handlers[signum] = signal.signal(signum, interrupt)
     try:
         for service in stack.writers:
             if service == 'tempo':
-                # Tempo 3.0's frontend queue cleanup runs every 30s and stops on SIGTERM.
-                # With ingress and Grafana fenced, let empty query queues disappear first.
-                # See upstream modules/frontend/queue/queue.go (queueCleanupPeriod/stopping).
-                sleep(35)
+                # Tempo 3.0's 30s queue cleanup timer stops on SIGTERM.
+                stack.quiesce_tempo(timeout=timeout, sleep=sleep)
             stopped.append(service)
             stack.dc('stop', '-t', str(timeout), service)
             stack.stopped_cleanly(service)
@@ -409,7 +485,7 @@ def backup(stack, timeout=120, sleep=time.sleep):
             try:
                 if stopped:
                     try:
-                        stack.resume(stopped)
+                        stack.resume(stopped, settle=timeout + 10 if capture_failed or interrupted else 0)
                     except BaseException:
                         if not capture_failed:
                             if (destination / 'manifest.json').is_file():
@@ -529,7 +605,7 @@ def cli():
 
 if __name__ == '__main__':
     def interrupted(signum, frame):
-        raise RuntimeError('interrupted; resuming fenced services')
+        raise Interrupted('interrupted; resuming fenced services')
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGHUP, interrupted)
     sys.exit(cli())

@@ -285,22 +285,116 @@ class BackupAttestationTests(unittest.TestCase):
         self.assertFalse((self.stack.state / 'textfile/checkpoint.prom').exists())
         self.assertFalse(self.stopped)
 
-    def test_tempo_fence_waits_after_query_sources_and_mimir_before_clean_stop(self):
-        self.stack.writers = checkpoint.WRITERS + ('rustfs',)
-        self.stack.attest_capture = lambda: None
-        self.stack.check_capture_volumes = lambda: None
-        events = []
-        original = self.stack.runner
+    def tempo_fence(self, metrics):
+        stack = self.stack
+        stack.writers = checkpoint.WRITERS + ('rustfs',)
+        stack.attest_capture = lambda: None
+        stack.check_capture_volumes = lambda: None
+        stack.image = 'pinned-helper'
+        events, helpers = [], {}
+        clock = [0]
+        original = stack.runner
         def runner(argv):
+            output = ''
             if argv[:3] == ['docker', 'compose', 'ps'] and '--services' in argv:
-                return subprocess.CompletedProcess(argv, 0, ' '.join(self.stack.writers), '')
-            if argv[:3] == ['docker', 'compose', 'stop']:
-                events.append(argv[-1])
-            return original(argv)
-        self.stack.runner = runner
-        destination = checkpoint.backup(self.stack, sleep=lambda seconds: events.append(seconds))
-        self.assertEqual(events, ['caddy', 'alloy', 'grafana', 'loki', 'mimir', 35, 'tempo', 'rustfs'])
+                output = ' '.join(stack.writers)
+            elif argv[:4] == ['docker', 'compose', 'ps', '-q'] and argv[-1] == 'tempo':
+                output = 'tempo-id'
+            elif argv[:2] == ['docker', 'inspect'] and argv[-1] == 'tempo-id':
+                output = json.dumps([{'Id': 'tempo-id', 'State': {'Running': True}, 'Config': {'Labels': {
+                    'com.docker.compose.project': 'test', 'com.docker.compose.service': 'tempo'}}}])
+            elif argv[:2] == ['docker', 'create']:
+                self.assertEqual(argv[argv.index('--network') + 1], 'container:tempo-id')
+                name = argv[argv.index('--name') + 1]
+                label = argv[argv.index('--label') + 1]
+                helpers[name] = {'Id': name, 'Config': {'Labels': dict([label.split('=', 1)])}}
+                output = name
+            elif argv[:3] == ['docker', 'start', '-a']:
+                events.append(('probe', clock[0]))
+                output = metrics(clock[0])
+            elif argv[:2] == ['docker', 'inspect'] and argv[-1] in helpers:
+                output = json.dumps([helpers[argv[-1]]])
+            elif argv[:3] == ['docker', 'rm', '-f']:
+                del helpers[argv[-1]]
+            else:
+                if argv[:3] == ['docker', 'compose', 'stop']:
+                    events.append((argv[-1], clock[0]))
+                return original(argv)
+            return subprocess.CompletedProcess(argv, 0, output, '')
+        def helper(mounts, script, *args, **kwargs):
+            if 'network' in kwargs:
+                self.assertGreater(kwargs['timeout'], 0)
+                return checkpoint.Stack.helper(stack, mounts, script, *args, **kwargs)
+            return self.archive(mounts, script, *args)
+        stack.runner = runner
+        stack.helper.side_effect = helper
+        def sleep(seconds):
+            clock[0] += seconds
+        return events, helpers, clock, sleep
+
+    def test_tempo_fence_waits_after_query_sources_and_mimir_before_clean_stop(self):
+        events, helpers, clock, sleep = self.tempo_fence(
+            lambda now: 'tempo_query_frontend_connected_clients 2\n')
+        with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]):
+            destination = checkpoint.backup(self.stack, sleep=sleep)
+        self.assertEqual([name for name, _ in events if name != 'probe'], list(self.stack.writers))
+        self.assertEqual(events[5], ('probe', 0))
+        self.assertEqual(events[-2:], [('tempo', 35), ('rustfs', 35)])
+        self.assertEqual(helpers, {})
         self.assertTrue((destination / 'manifest.json').exists())
+
+    def test_tempo_quiescence_busy_and_failed_probes_restart_quiet_window(self):
+        def metrics(now):
+            if now == 25:
+                raise RuntimeError('transient fetch failure')
+            if now == 35:
+                return 'unrelated_metric 1\n'
+            if now == 45:
+                return 'tempo_query_frontend_connected_clients 0\n'
+            queued = 1 if now < 5 or now == 15 else 0
+            return ('tempo_query_frontend_connected_clients 2\n'
+                    'tempo_query_frontend_queue_length{user="idle"} 0\n'
+                    f'tempo_query_frontend_queue_length{{user="busy"}} {queued}\n')
+        events, helpers, clock, sleep = self.tempo_fence(metrics)
+        with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]):
+            destination = checkpoint.backup(self.stack, sleep=sleep)
+        self.assertEqual(events[-2:], [('tempo', 81), ('rustfs', 81)])
+        self.assertEqual(helpers, {})
+        self.assertTrue((destination / 'manifest.json').exists())
+
+    def test_tempo_quiescence_deadline_resumes_without_stopping_tempo_or_capturing(self):
+        def metrics(now):
+            if now >= 10:
+                raise subprocess.TimeoutExpired(['docker', 'start'], 5)
+            return ('tempo_query_frontend_connected_clients 2\n'
+                    'tempo_query_frontend_queue_length{user="busy"} 1\n')
+        events, helpers, clock, sleep = self.tempo_fence(metrics)
+        runner = self.stack.runner
+        def ownership(argv):
+            result = runner(argv)
+            if argv[:2] == ['docker', 'inspect'] and argv[-1] == 'tempo-id' and clock[0] < 5:
+                containers = json.loads(result.stdout)
+                containers[0]['Config']['Labels']['com.docker.compose.project'] = 'foreign'
+                result.stdout = json.dumps(containers)
+            return result
+        self.stack.runner = ownership
+        old = self.stack.backups / '20260917T020000000000Z'
+        old.mkdir()
+        (old / 'manifest.json').write_text('{}')
+        metric = self.stack.state / 'textfile/checkpoint.prom'
+        metric.parent.mkdir()
+        metric.write_text('previous-success')
+        with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]), \
+                self.assertRaisesRegex(RuntimeError, 'Tempo.*quiescence.*deadline'):
+            checkpoint.backup(self.stack, timeout=40, sleep=sleep)
+        self.assertEqual(clock[0], 40)
+        self.assertEqual(next(event for event in events if event[0] == 'probe'), ('probe', 5))
+        self.assertNotIn('tempo', [name for name, _ in events])
+        self.assertNotIn('rustfs', [name for name, _ in events])
+        self.assertEqual(helpers, {})
+        self.assertEqual(checkpoint.complete_checkpoints(self.stack.backups), [old])
+        self.assertEqual(metric.read_text(), 'previous-success')
+        self.assertFalse(self.stopped)
 
     def test_resume_recovers_late_stop_missing_writer_and_waits_for_rustfs_health(self):
         stack = self.stack
@@ -352,7 +446,7 @@ class BackupAttestationTests(unittest.TestCase):
         with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: clock[0]), \
                 patch.object(checkpoint.time, 'sleep', side_effect=sleep), \
                 patch.object(checkpoint.bootstrap, 'wait_ready', side_effect=probe) as http:
-            stack.resume(stack.writers, timeout=8)
+            stack.resume(stack.writers, timeout=8, settle=2)
             self.assertEqual(http.call_count, 5)
             recover_health = False
             state['rustfs'] = 'unhealthy'
@@ -446,7 +540,7 @@ import checkpoint
 case = BackupAttestationTests()
 case.setUp()
 stack = case.stack
-def resume(stopped):
+def resume(stopped, **kwargs):
     stack.command = [sys.executable, {str(child)!r}]
     stack.runner = checkpoint.bootstrap.run
     checkpoint.Stack.resume(stack, stopped, timeout=5)
