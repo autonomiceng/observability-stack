@@ -61,7 +61,7 @@ def check(env_file: Path, origin: str, project: str) -> None:
     lines, _ = read_env(env_file)
     settings = {match['key']: bootstrap.unquote(match['value']) for match in map(bootstrap.ENV_LINE.match, lines) if match}
     check_access(env_file, settings)
-    check_rustfs_console(settings)
+    check_rustfs_console(settings, env_file)
     from smoke_status import check as check_status
     check_status(env_file, settings)
 
@@ -155,7 +155,7 @@ def check_proxy_access(env_file, settings):
     print('ok: exact external authority, internal Grafana, same-host sibling ports, root health, links, auth and metrics denial', flush=True)
 
 
-def check_rustfs_console(settings):
+def check_rustfs_console(settings, env_file):
     origin = bootstrap.rustfs_origin(settings)
     authority = urllib.parse.urlsplit(origin).netloc
 
@@ -200,10 +200,16 @@ def check_rustfs_console(settings):
         status, location, body = request(url.path + ('?' + url.query if url.query else ''))
         assert status == 200 and location is None and body and b'<html' not in body[:100].lower(), url.path
     assert request('/rustfs/admin/v3/accountinfo')[0] == 403
+    # A real container peer is outside the fixture's exact host-gateway allowlist.
+    denied = subprocess.run(['docker', 'compose', '--env-file', str(env_file), 'exec', '-T', 'caddy',
+                             'wget', '-S', '-q', '-O', '/dev/null', '--header=Host: ' + authority,
+                             'http://127.0.0.1/rustfs/console/'], capture_output=True, text=True, timeout=15)
+    assert denied.returncode != 0 and re.search(r'HTTP/1\.[01] 404(?: |\r?\n)', denied.stderr), \
+        'non-allowlisted loopback peer must receive console 404'
     # A direct, untrusted caller cannot replace its allowed peer identity or route via forwarding headers.
     assert request('/rustfs/console/', headers={'X-Forwarded-For': '203.0.113.200',
                    'X-Forwarded-Host': 'spoof.invalid:8451', 'X-Forwarded-Proto': 'https'})[0] == 200
-    print(f'ok: RustFS whole origin, {len(assets)} assets, HTML-only landing, unsigned admin denial and spoof isolation', flush=True)
+    print(f'ok: RustFS whole origin, {len(assets)} assets, HTML-only landing, unsigned admin denial, non-allowlisted peer denial and spoof isolation', flush=True)
 
 
 def check_access(env_file, settings):

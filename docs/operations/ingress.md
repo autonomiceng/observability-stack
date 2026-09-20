@@ -182,7 +182,7 @@ address. Caddy forwards all paths unchanged to `rustfs:9001`, including
 dropping the port, stripping a prefix or routing only the UI breaks same-origin requests
 and SigV4. Only GET/HEAD `/` requests accepting HTML redirect to `/rustfs/console/`.
 
-The whole origin requires `OB_OPERATOR_ALLOW`. Set it to the actual operator Tailnet
+The whole origin requires `OB_RUSTFS_CONSOLE_ALLOW`. Set it to the actual operator Tailnet
 client IPs (including IPv6 when used), separately from `OB_TRUSTED_PROXIES`, which must
 contain only Edge's exact connection peer IPs. If Tailscale termination presents its own
 peer identity instead of an original client, verify that identity and enforce client
@@ -239,3 +239,6 @@ addresses in `OB_OPERATOR_ALLOW`, separately from proxy trust in `OB_TRUSTED_PRO
 With no trusted proxy, the client address remains the connection's direct peer. Docker port
 forwarding may present the bridge address even for host loopback requests; add only a verified
 operator source if detailed local responses are needed.
+
+The native console has its own `OB_RUSTFS_CONSOLE_ALLOW` client list. Changing it
+does not grant access to monitoring operator endpoints controlled by `OB_OPERATOR_ALLOW`.

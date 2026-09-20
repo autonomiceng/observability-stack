@@ -384,6 +384,17 @@ def access_config(settings: dict[str, str]) -> None:
     if enabled not in ("true", "false"):
         raise Refused("rustfs_console_invalid", "OB_RUSTFS_CONSOLE must be true or false")
     settings["OB_RUSTFS_CONSOLE"] = enabled
+    console_allow = settings.get("OB_RUSTFS_CONSOLE_ALLOW", "127.0.0.1/8 ::1")
+    try:
+        if not console_allow.strip():
+            raise ValueError
+        for address in console_allow.split():
+            if ipaddress.ip_network(address, strict=False).prefixlen == 0:
+                raise ValueError
+    except ValueError as error:
+        raise Refused("rustfs_console_allow_invalid",
+                      "OB_RUSTFS_CONSOLE_ALLOW requires client IPs or CIDRs narrower than all addresses") from error
+    settings["OB_RUSTFS_CONSOLE_ALLOW"] = console_allow
     if enabled == "true" and "s3" not in settings.get("COMPOSE_PROFILES", "").split(","):
         raise Refused("rustfs_console_requires_s3", "enable the console only on an existing S3 installation; "
                       "storage changes require an explicit migration")
@@ -554,7 +565,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
             "OB_BIND_HOST", "OB_HTTP_PORT", "OB_HTTPS_PORT", "OB_PUBLIC_PORT_SUFFIX",
             "OB_TRUSTED_PROXIES", "OB_OPERATOR_ALLOW", "OB_GRAFANA_URL",
             "OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY", "COMPOSE_FILE", "COMPOSE_PROFILES",
-            "OB_RUSTFS_CONSOLE", "OB_RUSTFS_HOST", "OB_RUSTFS_URL",
+            "OB_RUSTFS_CONSOLE", "OB_RUSTFS_CONSOLE_ALLOW", "OB_RUSTFS_HOST", "OB_RUSTFS_URL",
             "OB_RUSTFS_URL_HOST", "OB_RUSTFS_AUTHORITY",
         )
         lines = env_file.read_text().splitlines()

@@ -132,7 +132,7 @@ for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'pr
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \
     -e "OB_ACCESS_MODE=$1" -e "OB_PUBLIC_DOMAIN=$2" -e OB_GRAFANA_HOST=grafana.example.com \
     -e OB_TRUSTED_PROXIES=192.0.2.2/32 -e OB_RUSTFS_HOST=rustfs.example.com \
-    -e "OB_OPERATOR_ALLOW=100.100.1.2/32 fd7a:115c:a1e0::1/128" \
+    -e "OB_OPERATOR_ALLOW=192.0.2.9/32" -e "OB_RUSTFS_CONSOLE_ALLOW=100.100.1.2/32" \
     -e "OB_RUSTFS_CONSOLE=$enabled" -e "OB_RUSTFS_URL_HOST=$url_host" -e "OB_RUSTFS_AUTHORITY=$rustfs_authority" \
     -e "OB_GRAFANA_URL_HOST=$url_host" -e "OB_GRAFANA_AUTHORITY=$authority" \
     -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" "$caddy_image" \
@@ -179,7 +179,7 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
                      and {'dial': 'rustfs:9001'} in item.get('upstreams', [])]
     assert bool(rustfs_proxies) == ('rustfs:9001' in encoded), f'{path}: missing RustFS proxy assertion target'
     protected = 0
-    denial_match = [{'not': [{'client_ip': {'ranges': ['100.100.1.2/32', 'fd7a:115c:a1e0::1/128']}}]}]
+    denial_match = [{'not': [{'client_ip': {'ranges': ['100.100.1.2/32']}}]}]
     for item in objects(config):
         if item.get('handler') != 'subroute':
             continue
@@ -194,6 +194,18 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
                            for earlier in routes[:index]), f'{path}: RustFS proxy lacks a preceding operator denial'
                 protected += 1
     assert protected == len(rustfs_proxies), f'{path}: RustFS proxy outside the gated route'
+    operator_paths = ('/versions.json', '/health/grafana', '/health/loki', '/health/tempo',
+                      '/health/mimir', '/health/alloy', '/health/gateway', '/health/backplane',
+                      '/health/alerts')
+    for operator_path in operator_paths:
+        matched_routes = [item for item in objects(config) if any(
+            isinstance(match, dict) and operator_path in match.get('path', [])
+            for match in item.get('match', []))]
+        assert matched_routes, f'{path}: missing {operator_path} operator route'
+        for route in matched_routes:
+            ranges = [item['client_ip']['ranges'] for item in objects(route) if 'client_ip' in item]
+            assert ['192.0.2.9/32'] in ranges, f'{path}: {operator_path} lacks monitoring operator allowlist'
+            assert ['100.100.1.2/32'] not in ranges, f'{path}: {operator_path} uses RustFS console allowlist'
     if path.name.startswith('caddy-proxy-darkforge.tail694fe2.ts.net-'):
         assert 'darkforge.tail694fe2.ts.net:8447' in encoded
         assert 'darkforge.tail694fe2.ts.net:8451' in encoded
