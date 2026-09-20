@@ -623,6 +623,34 @@ class BootstrapTests(unittest.TestCase):
         for value in secrets_before.values():
             self.assertNotIn(value, links)
 
+    def test_custom_compose_order_survives_bootstrap_and_rerun(self):
+        self.env.write_text("OB_ACCESS_MODE=proxy\nOB_TRUSTED_PROXIES=192.0.2.2/32\n")
+        self.render()
+        for name in ("compose.yaml", "compose.proxy.yaml"):
+            shutil.copy(self.template.parent / name, self.root / name)
+        custom = self.root / "operator.yaml"
+        custom.write_text("services: {}\n")
+        selection = "compose.yaml:" + str(custom) + ":compose.proxy.yaml"
+        source = self.env.read_text()
+        source = "\n".join(line for line in source.splitlines() if not line.startswith("COMPOSE_FILE="))
+        self.env.write_text(source + "\n# Retain operator selection\nCOMPOSE_FILE=" + selection + "\n")
+        for _ in range(2):
+            run = runner_with()
+            with patch.object(bootstrap, "__file__", str(self.root / "scripts/bootstrap.py")), \
+                 patch.object(bootstrap, "wait_ready"):
+                self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=run), 0)
+            self.assertIn("# Retain operator selection\nCOMPOSE_FILE=" + selection + "\n", self.env.read_text())
+            calls = [call for call in run.calls if call[:2] == ["docker", "compose"] and
+                     ("config" in call or "up" in call)]
+            self.assertEqual(len(calls), 2)
+            for call in calls:
+                self.assertEqual([call[i + 1] for i, arg in enumerate(call) if arg == "-f"],
+                                 [str(self.root / "compose.yaml"), str(custom), str(self.root / "compose.proxy.yaml")])
+        for value in ("operator.yaml:compose.yaml:compose.proxy.yaml", "compose.yaml:missing.yaml:compose.proxy.yaml",
+                      "compose.yaml:operator.yaml", "compose.yaml:operator.yaml:compose.proxy.yaml:operator.yaml"):
+            with self.subTest(value=value), self.assertRaises(bootstrap.Refused):
+                bootstrap.compose_selection(self.root, {"COMPOSE_FILE": value}, False, True)
+
     def test_proxy_records_override_and_starts_with_it_in_both_storage_modes(self):
         for profile in ("", "s3"):
             self.env.write_text("OB_ACCESS_MODE=proxy\nOB_SCHEME=https\nOB_TRUSTED_PROXIES=192.0.2.2\nCOMPOSE_PROFILES=" + profile + "\n")

@@ -63,6 +63,9 @@ asynchronous, so retention is a time horizon rather than a strict disk quota.
 
 Set `COMPOSE_PROFILES=s3` before bootstrap for RustFS. Compose profiles can add services but
 cannot replace existing mounts, so bootstrap records `COMPOSE_FILE=compose.yaml:compose.s3.yaml`.
+Custom `COMPOSE_FILE` selections retain their file order through configuration checks
+and startup. Keep the base file first and include the storage and access overlays matching
+the selected modes. Missing custom files or conflicting shell selections are refused.
 The override selects the three S3 configs. A one-shot `rustfs-init` reuses RustFS's image and
 SigV4-capable curl to create separate buckets. WALs, compaction state and caches remain local.
 The storage-mode marker refuses silent switches. This is a fresh-install option; copying
