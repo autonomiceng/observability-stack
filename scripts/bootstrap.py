@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+from functools import partial
 import json
 import http.client
 import ipaddress
@@ -59,7 +60,7 @@ class Refused(Exception):
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
-def run(argv: list[str], *, timeout: float = 60) -> subprocess.CompletedProcess[str]:
+def run(argv: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, text=True, capture_output=True, check=False, timeout=timeout)
 
 
@@ -428,7 +429,8 @@ def record_bootstrap(state_dir, root, env_file, started, state):
         print('Bootstrap status record unavailable; inspect status storage privately.', file=sys.stderr)
 
 
-def bootstrap(argv: list[str], runner: Runner = run) -> int:
+# Bound bootstrap commands without changing the shared runner used for bulk checkpoint I/O.
+def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int:
     parser = argparse.ArgumentParser(prog="bootstrap.py", description=__doc__.splitlines()[0])
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--template", default=".env.example")
