@@ -84,7 +84,6 @@ their paths gains that authority, as with bootstrap and Compose themselves. Keep
 these inputs writable only by the installation user or root; shared checkouts
 writable by other users are unsupported. The installer protects its generated
 unit destination; it does not verify the entire code and configuration chain.
-Use a checkout path without symlink components so the observer can publish status.
 
 Unit-directory ancestors must be owned by root or the installation user and must
 not be group- or other-writable, except trusted sticky directories with existing
