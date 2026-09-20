@@ -65,6 +65,10 @@ class StatusIOTests(unittest.TestCase):
         self.assertEqual(state.stat().st_mode & 0o777, 0o700)
         self.assertEqual((state / 'status').stat().st_mode & 0o777, 0o700)
         self.assertEqual((state / 'console').stat().st_mode & 0o777, 0o755)
+        with self.assertRaises(io.Unavailable):
+            with io.directory(state / 'writable', 0o775):
+                pass
+        self.assertFalse((state / 'writable').exists())
 
     def test_failed_flush_and_oversize_preserve_previous_document(self):
         with io.directory(self.root) as fd:

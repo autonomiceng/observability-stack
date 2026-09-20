@@ -103,6 +103,8 @@ def read_json(text, limit=65536):
 @contextmanager
 def directory(path, mode=0o755, *, create=True):
     """Walk with directory descriptors so swapped symlinks cannot redirect writes."""
+    if mode & 0o022:
+        raise Unavailable()
     path = Path(os.path.abspath(path))
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     parts = path.parts[1:]
@@ -157,9 +159,9 @@ def publish(fd, name, document, mode=0o644, *, serialized=False):
                      mode, dir_fd=fd)
     try:
         with os.fdopen(handle, 'wb') as stream:
-            os.fchmod(stream.fileno(), mode)
             stream.write(payload)
             stream.flush()
+            os.fchmod(stream.fileno(), mode)
             os.fsync(stream.fileno())
         regular(fd, name)
         os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
