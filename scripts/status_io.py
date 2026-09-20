@@ -103,10 +103,14 @@ def read_json(text, limit=65536):
 @contextmanager
 def directory(path, mode=0o755, *, create=True):
     """Walk with directory descriptors so swapped symlinks cannot redirect writes."""
+    if mode & 0o022:
+        raise Unavailable()
     path = Path(os.path.abspath(path))
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    parts = path.parts[1:]
+    leaf_created = False
     try:
-        for part in path.parts[1:]:
+        for index, part in enumerate(parts):
             try:
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             except FileNotFoundError:
@@ -114,11 +118,14 @@ def directory(path, mode=0o755, *, create=True):
                     raise
                 os.mkdir(part, mode=mode, dir_fd=fd)
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                leaf_created = index == len(parts) - 1
             os.close(fd)
             fd = child
         info = os.fstat(fd)
         if info.st_uid != os.getuid() or info.st_mode & 0o022:
             raise Unavailable()
+        if leaf_created:
+            os.fchmod(fd, mode)
         yield fd
     finally:
         os.close(fd)
@@ -152,9 +159,9 @@ def publish(fd, name, document, mode=0o644, *, serialized=False):
                      mode, dir_fd=fd)
     try:
         with os.fdopen(handle, 'wb') as stream:
-            os.fchmod(stream.fileno(), mode)
             stream.write(payload)
             stream.flush()
+            os.fchmod(stream.fileno(), mode)
             os.fsync(stream.fileno())
         regular(fd, name)
         os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
