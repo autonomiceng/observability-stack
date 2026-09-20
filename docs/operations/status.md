@@ -5,12 +5,13 @@ version 1 public allowlist in local HTTP/HTTPS, public HTTP/HTTPS and proxy mode
 Public HTTP serves this exact path without redirecting. Other methods receive an
 empty 405; a missing document receives an empty 404. Responses use JSON and
 `Cache-Control: no-store`. Caddy removes authorization, proxy authorization, cookies,
-conditional cache headers and range requests before serving the file. No request is
+all conditional request headers and range requests before serving the file. No request is
 forwarded to a backend. The observer's private records are outside Caddy's mount.
 
 The host observer uses Python's standard library and the existing Docker CLI. Run it
 as the installation owner, an ordinary trusted host user with Docker access, file
-ownership and read access to the chosen env file. Docker access remains host-root
+ownership and read access to the chosen env file. It must run as the same uid that ran
+bootstrap. Docker access remains host-root
 equivalent authority. There is no new container, privileged service, published port,
 package dependency or Caddy Docker socket mount.
 
@@ -29,16 +30,18 @@ Selection is explicit. Native Compose resolves the selected env file, including
 shell and user-manager `OB_*`/`COMPOSE_*` overrides are discarded. Persist desired
 settings in the selected env file. Docker connection settings are retained. Bootstrap
 saves its project, state directory and volume prefix selections in that env file.
-Relative Compose paths resolve from the selected checkout. The output directory comes from
+The checkout and env paths are resolved to their canonical targets, matching bootstrap and
+the timer installer. Relative Compose paths resolve from the selected checkout. The output directory comes from
 Caddy's effective read-only `/srv/state` bind mount; it must end in `console`.
 Normally this is `OB_STATE_DIR/console`, default `data/console`. The observer never
 falls back to another installation when configuration resolution fails.
 
 Bootstrap records its preparation task after env/access/storage validation. It saves
 an unknown in-progress record, then success or failure, including the actual invocation
-start time. An interrupted process leaves unknown. Validation refusals and render-only
-runs create no task record. After readiness succeeds bootstrap attempts an initial
-observation; observation failure prints a fixed warning and preserves bootstrap success.
+start time. Abrupt termination before the final record leaves unknown; a caught interrupt
+during startup records unavailable. Validation refusals and render-only runs create no task
+record. After readiness succeeds bootstrap attempts an initial observation with a 120-second
+deadline; observation failure prints a fixed warning and preserves bootstrap success.
 Recording failures only warn and preserve the original bootstrap result.
 Bootstrap never installs or enables a timer.
 
@@ -77,7 +80,11 @@ a local bridge network before dialing. This requires Linux host access to bridge
 addresses. Remote contexts, rootless Docker, missing IPv4 addresses and unsupported
 network layouts leave readiness unknown. A local bridge blocked by a firewall produces
 unavailable when its probe fails. A Unix socket proxy to a remote daemon is outside the
-trusted local-daemon assumption. Do not use one for this observer.
+trusted local-daemon assumption. Do not use one for this observer. When `DOCKER_HOST` is
+set, it and the endpoint reported by `docker context inspect` must agree on the same local
+Unix socket. An explicit non-Unix `DOCKER_HOST` or a selected context with a non-Unix
+endpoint disables host HTTP probes. This conservative check does not assume universal
+precedence between Docker client versions.
 
 | Component | Probe and healthy evidence | Runtime version | Limits |
 | --- | --- | --- | --- |
@@ -101,9 +108,12 @@ labels or malformed inspection stays unknown. A task with no record stays unknow
 Runtime probes are bracketed by inspections of the same container and start time;
 identity changes discard runtime evidence.
 
-These reads may update application access logs and internal counters. Three version
-probes execute short-lived binaries inside existing containers using
-`timeout -s KILL 3`; a missing executable or timeout utility yields unknown version.
+These reads may update application access logs and internal counters. Every observation
+executes up to three short-lived version commands inside existing containers using
+`timeout -s KILL 3`. With the 30-second timer this can approach 8,640 `docker exec` calls
+per day: about 2,880 each for Caddy, RustFS when enabled, and Alloy. The Alloy command runs
+in its existing privileged root container. A missing executable or timeout utility yields
+unknown version.
 No shell, package installation, reload, restart, user-data query, telemetry ingestion
 or object write is performed. A custom image may not implement the shipped probe.
 
@@ -141,7 +151,8 @@ including trickled headers. Python kills only its directly spawned child on time
 the in-container version command has its own three-second deadline. Private files
 are bounded reads. No backend diagnostic bodies or command errors enter public JSON.
 
-`configuredVersion` is an allowlisted release tag or `custom`. `observedVersion` comes
+`configuredVersion` is an allowlisted normalized release version or `custom`; allowed
+packaging suffixes such as `-alpine` and `-ubuntu` are omitted. `observedVersion` comes
 only from a runtime endpoint or binary. `configuredDigest` is a registry manifest
 digest; `observedImageId` is Docker's local image content ID. They identify different
 objects and must not be compared as a convergence check. Only lowercase complete
@@ -149,11 +160,13 @@ SHA-256 identifiers and tightly parsed release strings are published. Container 
 IDs, addresses, host paths, environments, commands, credentials and errors are excluded.
 
 Publication writes a same-directory temporary file, flushes and fsyncs it, then replaces
-the public file atomically. Public JSON is mode 0644. Private task records are mode
+the public file atomically. A serialized writer reclaims the fixed per-destination temporary
+name after abrupt termination. Public JSON is mode 0644. Private task records are mode
 0600 under `OB_STATE_DIR/status` mode 0700. The output directory must be owned by the
 observer user without group/other write permission; symlinked directory paths and
 symlink/hardlink output files are refused. Bootstrap creates the console directory with mode 0755 subject to the operator umask;
-existing directory permissions remain unchanged. For an existing installation with group-writable console metadata, the owner
+it precreates the state root with ordinary umask-derived permissions before status recording.
+The status I/O layer leaves existing directory permissions unchanged. For an existing installation with group-writable console metadata, the owner
 must correct its permissions before running the observer. Do not put secrets in the
 console directory.
 

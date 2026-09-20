@@ -58,6 +58,9 @@ def check(env_file, settings):
             assert request(scheme, port, headers={
                 'Authorization': 'Bearer smoke-unused', 'Cookie': 'session=smoke-unused',
                 'If-None-Match': '*', 'If-Modified-Since': 'Thu, 31 Dec 2099 23:59:59 GMT',
+                'If-Match': '"never-match"',
+                'If-Unmodified-Since': 'Thu, 1 Jan 1970 00:00:00 GMT',
+                'If-Range': '"never-match"',
                 'Range': 'bytes=0-5'})[::2] == (200, original)
         # Frozen evidence stays frozen, even when the gateway serves it with a fresh Date.
         document['generatedAt'] = '2000-01-01T00:00:00Z'

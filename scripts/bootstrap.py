@@ -56,11 +56,11 @@ class Refused(Exception):
         self.detail = detail
 
 
-Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
+Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
-def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, text=True, capture_output=True, check=False)
+def run(argv: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, text=True, capture_output=True, check=False, timeout=timeout)
 
 
 def read_env(path: Path) -> tuple[list[str], dict[str, str]]:
@@ -548,7 +548,9 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             print(json.dumps({"env": str(env_file), "project": project, "generated": sorted(missing)}))
             return 0
 
-        # Record only after env/access/storage validation. Interrupted runs remain unknown.
+        # Preserve ordinary state-root permissions before private status storage is made.
+        state_dir.mkdir(parents=True, exist_ok=True)
+        # Record only after env/access/storage validation. Abruptly terminated runs remain unknown.
         record_bootstrap(state_dir, root, env_file, started, 'unknown')
         try:
             # Profiles cannot replace another service's config mount. Record the matching
@@ -590,7 +592,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             record_bootstrap(state_dir, root, env_file, started, 'healthy')
             try:
                 initial = runner([sys.executable, str(root / 'scripts/status_observer.py'),
-                                  '--checkout', str(root), '--env-file', str(env_file)])
+                                  '--checkout', str(root), '--env-file', str(env_file)], timeout=120)
                 if initial.returncode:
                     print('Initial status observation failed; retry the observer privately.', file=sys.stderr)
             except (OSError, subprocess.SubprocessError):

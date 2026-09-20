@@ -47,6 +47,27 @@ class StatusIntegrationTests(unittest.TestCase):
         with self.assertRaises(Unavailable):
             installer.install(self.root, env, units, lambda *args, **kw: self.fail('reselected'))
 
+    def test_installer_preserves_existing_shared_unit_directory_mode(self):
+        env = self.root / 'chosen.env'
+        env.touch()
+        units = self.root / 'units'
+        units.mkdir(mode=0o750)
+        installer.install(self.root, env, units, lambda argv, **kw: None)
+        self.assertEqual(units.stat().st_mode & 0o777, 0o750)
+
+    def test_installer_canonicalizes_symlinked_checkout_and_env(self):
+        env = self.root / 'chosen.env'
+        env.touch()
+        link = self.root.parent / (self.root.name + '-checkout')
+        link.symlink_to(self.root, target_is_directory=True)
+        self.addCleanup(link.unlink)
+        units = self.root / 'units'
+        installer.install(link, link / env.name, units, lambda argv, **kw: None)
+        service = (units / 'observability-status.service').read_text()
+        self.assertIn(str(self.root.resolve() / 'scripts/status_observer.py'), service)
+        self.assertIn(str(env.resolve()), service)
+        self.assertNotIn(str(link), service)
+
     def test_systemd_quotes_paths_without_shell_expansion(self):
         value = installer.quote('/tmp/a "$SECRET" %h\\b')
         self.assertIn('$$SECRET', value)
@@ -56,17 +77,30 @@ class StatusIntegrationTests(unittest.TestCase):
         with self.assertRaises(Unavailable):
             installer.quote('/tmp/injected\nExecStart=secret')
 
-    def bootstrap_run(self, fail_ready=False, fail_observer=False):
+    def bootstrap_run(self, fail_ready=False, fail_observer=False, timeout_observer=False,
+                      initial_state_mode=None):
         base = runner_with()
         seen = []
-        def run(argv):
+        recorded = []
+        task_record = bootstrap.task_record
+        def record(state_dir, *args):
+            if not recorded:
+                self.assertTrue(state_dir.is_dir())
+                if initial_state_mode is not None:
+                    self.assertEqual(state_dir.stat().st_mode & 0o777, initial_state_mode)
+            recorded.append(args)
+            return task_record(state_dir, *args)
+        def run(argv, **options):
             if argv[0] == sys.executable:
                 record = json.loads((self.root / 'custom/status/bootstrap.json').read_text())
                 self.assertEqual(record['state'], 'healthy')
                 self.assertGreater(len(seen), 0)
                 self.assertEqual(argv[-4:], ['--checkout', str(self.root), '--env-file', str(self.root / '.env')])
+                self.assertEqual(options, {'timeout': 120})
+                if timeout_observer:
+                    raise subprocess.TimeoutExpired(argv, options['timeout'])
                 return subprocess.CompletedProcess(argv, int(fail_observer), '', 'SECRET')
-            return base(argv)
+            return base(argv, **options)
         def ready(*args, **kw):
             seen.append(args)
             record = json.loads((self.root / 'custom/status/bootstrap.json').read_text())
@@ -74,6 +108,7 @@ class StatusIntegrationTests(unittest.TestCase):
             if fail_ready:
                 raise bootstrap.Refused('not_ready', 'private failure')
         with patch.object(bootstrap, '__file__', str(self.root / 'scripts/bootstrap.py')), \
+                patch.object(bootstrap, 'task_record', side_effect=record), \
                 patch.object(bootstrap, 'wait_ready', side_effect=ready), \
                 patch.dict(os.environ, {'OB_STATE_DIR': str(self.root / 'custom'), 'OB_ALERTS': 'placeholder'}), \
                 patch('sys.stdout', new_callable=io.StringIO), patch('sys.stderr', new_callable=io.StringIO) as errors:
@@ -100,6 +135,24 @@ class StatusIntegrationTests(unittest.TestCase):
 
     def test_initial_observer_failure_does_not_undo_bootstrap_success(self):
         self.assertEqual(self.bootstrap_run(fail_observer=True)['state'], 'healthy')
+
+    def test_initial_observer_timeout_does_not_undo_bootstrap_success(self):
+        self.assertEqual(self.bootstrap_run(timeout_observer=True)['state'], 'healthy')
+
+    def test_bootstrap_precreates_state_root_with_ordinary_permissions(self):
+        previous = os.umask(0o022)
+        try:
+            self.assertEqual(self.bootstrap_run(initial_state_mode=0o755)['state'], 'healthy')
+        finally:
+            os.umask(previous)
+
+    def test_public_status_handler_strips_all_precondition_and_range_headers(self):
+        caddyfile = (ROOT / 'docker/caddy/Caddyfile').read_text()
+        status = caddyfile[caddyfile.index('(status) {'):caddyfile.index('(probes) {')]
+        for name in ('Authorization', 'Proxy-Authorization', 'Cookie', 'If-None-Match',
+                     'If-Modified-Since', 'If-Match', 'If-Unmodified-Since', 'If-Range',
+                     'Range'):
+            self.assertIn('request_header -' + name, status)
 
     def test_partial_unit_write_rolls_back_without_enabling_timer(self):
         env = self.root / '.env'

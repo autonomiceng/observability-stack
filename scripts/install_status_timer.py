@@ -51,7 +51,7 @@ WantedBy=timers.target
 
 
 def install(root, env_file, unit_dir, runner=run):
-    root, env_file = Path(os.path.abspath(root)), Path(os.path.abspath(env_file))
+    root, env_file = Path(root).resolve(), Path(env_file).resolve()
     if not (root / 'compose.yaml').is_file() or not env_file.is_file():
         raise Unavailable()
     if not (root / 'scripts/status_observer.py').is_file():
@@ -59,7 +59,7 @@ def install(root, env_file, unit_dir, runner=run):
     contents = units(root, env_file)
     # Refuse to overwrite existing units, including a previous selection. Operators
     # disable/remove the old pair explicitly before selecting another installation.
-    with directory(unit_dir, 0o700) as fd:
+    with directory(unit_dir, 0o755) as fd:
         for name in contents:
             regular(fd, name)
             try:

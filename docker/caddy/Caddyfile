@@ -74,6 +74,9 @@
 			# Prevent conditional/range requests from extending a frozen observation.
 			request_header -If-None-Match
 			request_header -If-Modified-Since
+			request_header -If-Match
+			request_header -If-Unmodified-Since
+			request_header -If-Range
 			request_header -Range
 			header Content-Type application/json
 			header Cache-Control no-store

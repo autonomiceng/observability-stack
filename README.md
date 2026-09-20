@@ -85,6 +85,7 @@ Each runs alone. Shared conventions are in [docs/conventions.md](docs/convention
 ## Day two
 
 - [Ingress and access modes](docs/operations/ingress.md)
+- [Public status observations](docs/operations/status.md)
 - [Maintenance and version bumps](docs/operations/maintenance.md)
 - [Host sizing and OOM recovery](docs/operations/capacity.md)
 - [Disk-full recovery](docs/operations/disk-full.md)

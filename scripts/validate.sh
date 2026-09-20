@@ -131,6 +131,20 @@ done
 python3 - "$work" <<'PY'
 import json, sys
 from pathlib import Path
+
+def objects(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from objects(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from objects(child)
+
+def status_route(value):
+    return any(isinstance(match, dict) and '/status.json' in match.get('path', [])
+               for match in value.get('match', []))
+
 for path in Path(sys.argv[1]).glob('caddy-*.json'):
     config = json.loads(path.read_text())
     servers = config['apps']['http']['servers'].values()
@@ -140,6 +154,13 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
         assert server['trusted_proxies']['ranges'] == ['192.0.2.2/32']
         assert server['trusted_proxies_strict']
     encoded = json.dumps(config)
+    status_routes = [item for item in objects(config) if status_route(item)]
+    assert status_routes, f'{path}: missing adapted /status.json route'
+    for route in status_routes:
+        handlers = {item.get('handler') for item in objects(route)}
+        assert {'file_server', 'static_response'} <= handlers, (
+            f'{path}: /status.json must terminate in file or empty static responses')
+        assert 'Location' not in json.dumps(route), f'{path}: /status.json redirects'
     if path.name == 'caddy-proxy-darkforge.tail694fe2.ts.net.json':
         assert 'darkforge.tail694fe2.ts.net:8447' in encoded
         assert 'http.request.hostport' in encoded
@@ -148,6 +169,8 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
         assert 'https://observe.example.com' in encoded and '308' in encoded
         assert '/health/grafana' in encoded
         assert '"module": "acme"' in encoded
+        assert any('/status.json' in json.dumps(server) and 'Location' in json.dumps(server)
+                   for server in servers), f'{path}: public HTTP route lacks status bypass'
     if path.name.startswith('caddy-local-'):
         assert '"module": "internal"' in encoded
         assert '"Location"' not in encoded

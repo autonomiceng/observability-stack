@@ -19,7 +19,7 @@ import bootstrap  # noqa: E402
 def runner_with(volumes=(), network_exists=True, labelled_volumes=()):
     calls = []
 
-    def run(argv):
+    def run(argv, **options):
         calls.append(argv)
         if argv[:3] == ["docker", "volume", "ls"]:
             if "--filter" in argv:

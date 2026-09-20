@@ -19,7 +19,7 @@ Set `OB_ACCESS_MODE` before running bootstrap. Bootstrap records the browser URL
 | Mode | Listeners | Certificates | HTTP behavior | Default external scheme |
 | --- | --- | --- | --- | --- |
 | Local (`local`, default) | HTTP and HTTPS | Self-signed | HTTP stays available | `http` |
-| Public (`public`) | HTTP and HTTPS | Trusted certificates for your domain | Redirect to HTTPS, except health checks | `https` |
+| Public (`public`) | HTTP and HTTPS | Trusted certificates for your domain | Redirect to HTTPS, except health checks and `/status.json` | `https` |
 | Behind another gateway (`proxy`) | HTTP from the gateway | The other gateway handles HTTPS | No redirect inside this stack | `https` |
 
 `OB_SCHEME` is the browser URL protocol, independently of the listener protocol.
@@ -66,7 +66,8 @@ OB_BIND_HOST=0.0.0.0
 
 Run bootstrap. Caddy obtains certificates and redirects HTTP to the configured HTTPS
 origins. Exact root health routes remain available over HTTP without a redirect; backend
-APIs remain private. Public readiness verifies the certificate with system trust and sends
+APIs remain private. Exact `/status.json` is also served over HTTP without a redirect and
+exposes the public allowlist described in the [status runbook](status.md). Public readiness verifies the certificate with system trust and sends
 the configured hostname as TLS SNI while dialing the loopback published port.
 
 ## Behind another gateway
