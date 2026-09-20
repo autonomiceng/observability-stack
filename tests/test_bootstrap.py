@@ -424,6 +424,21 @@ class BootstrapTests(unittest.TestCase):
                 bootstrap.access_config({"OB_GRAFANA_URL": origin})
             self.assertEqual(refused.exception.code, "grafana_url_invalid")
 
+    def test_grafana_default_ports_are_canonicalized(self):
+        for scheme, port in (("http", 80), ("https", 443)):
+            for host in ("grafana.example.com", "[::1]"):
+                with self.subTest(scheme=scheme, host=host):
+                    settings = {"OB_ACCESS_MODE": "proxy", "OB_TRUSTED_PROXIES": "192.0.2.2",
+                                "OB_GRAFANA_URL": f"{scheme}://{host}:{port}"}
+                    bootstrap.access_config(settings)
+                    self.assertEqual(settings["OB_GRAFANA_URL"], f"{scheme}://{host}")
+                    self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], host)
+                    self.assertEqual(bootstrap.grafana_origin(settings), f"{scheme}://{host}")
+                    settings["OB_GRAFANA_URL"] = f"{scheme}://{host}:8447"
+                    bootstrap.access_config(settings)
+                    self.assertEqual(settings["OB_GRAFANA_URL"], f"{scheme}://{host}:8447")
+                    self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], f"{host}:8447")
+
     def test_generated_grafana_origin_and_console_links(self):
         source = self.template.parent
         (self.root / "compose.yaml").write_text((source / "compose.yaml").read_text())

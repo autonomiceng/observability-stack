@@ -297,6 +297,8 @@ def grafana_url_config(settings: dict[str, str]) -> None:
     except ValueError as error:
         raise Refused("grafana_url_invalid", "OB_GRAFANA_URL must be an HTTP(S) origin with no path, "
                       "credentials, query or fragment; public mode requires HTTPS") from error
+    if port == (443 if url.scheme == "https" else 80):
+        authority = authority_host
     settings["OB_GRAFANA_URL"] = url.scheme + "://" + authority
     settings["OB_GRAFANA_URL_HOST"] = host
     settings["OB_GRAFANA_AUTHORITY"] = authority
