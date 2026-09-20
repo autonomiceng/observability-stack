@@ -215,10 +215,10 @@ Primary references: [Grafana health](https://grafana.com/docs/grafana/latest/dev
 [Docker bridge networking](https://docs.docker.com/engine/network/drivers/bridge/).
 
 If unit activation fails after files were written, inspect `systemctl --user status
-observability-status.timer` before retrying. Disable the selected timer and remove
-only the two generated units before reinstalling; partial activation may already
-have started observation. The installer deliberately retains those units for
-inspection and will not overwrite them. A concurrent observer holding this
-installation's lock makes a new invocation a successful no-op.
+observability-status.timer`, then rerun the same `--install` command. Keep the exact
+pair in place: the installer verifies ownership and retries activation without
+rewriting it. Partial or foreign pairs require inspection before further changes.
+Partial activation may already have started observation; a concurrent observer
+holding this installation's lock makes a new invocation a successful no-op.
 
 Docker endpoint agreement is conservative and byte-exact. Use the same Unix socket spelling for `DOCKER_HOST` and the selected context (for example, both `/var/run/docker.sock`); aliases such as `/run/docker.sock` can otherwise produce unknown observations.
