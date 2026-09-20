@@ -24,11 +24,15 @@ if docker network inspect "$network" >/dev/null 2>&1; then
 fi
 work=$(mktemp -d)
 env_file="$work/.env"
+producer=
 # Resolve before installing the trap so cleanup itself needs no Python import.
 volumes=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import bootstrap; print(" ".join(bootstrap.VOLUMES))')
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
+  if [ -n "$producer" ]; then
+    docker rm -f "$producer" >/dev/null || result=1
+  fi
   if [ "$result" -ne 0 ]; then
     docker compose --env-file "$env_file" ps -a >&2 || true
   fi
@@ -69,6 +73,16 @@ sed -e "s#^OB_HTTP_PORT=.*#OB_HTTP_PORT=$http_port#" \
 chmod 600 "$env_file"
 docker network create "$network" >/dev/null
 trap cleanup EXIT HUP INT TERM
+image=$(sed -n 's/^    image: \(caddy:[^ ]*\)$/\1/p' compose.yaml)
+producer=$(docker run -d --network none --log-driver=journald --log-opt cache-disabled=true \
+  --entrypoint sh "$image" -c 'echo independent-stdout; echo independent-stderr >&2')
+docker wait "$producer" >/dev/null
+docker logs "$producer" > "$work/producer.stdout" 2> "$work/producer.stderr"
+grep -q independent-stdout "$work/producer.stdout"
+grep -q independent-stderr "$work/producer.stderr"
+docker rm "$producer" >/dev/null
+producer=
+echo 'ok: journald Docker API reads stdout/stderr before Collector startup, cache disabled'
 python3 scripts/bootstrap.py --env-file "$env_file"
 echo 'ok: bootstrap readiness'
 docker compose --env-file "$env_file" ps -a --format json > "$work/services.jsonl"

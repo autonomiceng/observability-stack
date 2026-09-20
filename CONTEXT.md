@@ -38,12 +38,16 @@ The trusted Docker network shared by sibling stacks on one host for ingress and 
 _Avoid_: Default network, public network
 
 **Local Mode**:
-Loopback-only HTTP access using local hostnames.
+Local access over both HTTP and privately issued HTTPS, with HTTP as the canonical origin by default.
 _Avoid_: Development mode
 
 **Public Mode**:
-HTTPS access through the Stack Gateway on an operator's domain and public bind address.
+Publicly certified HTTPS access through the Stack Gateway on an operator's domain, with HTTP redirects.
 _Avoid_: Production mode
+
+**Proxy Mode**:
+HTTP access behind Platform Edge, which owns the external TLS connection and forwards the configured public origin.
+_Avoid_: Public Mode, Local Mode
 
 **Pinned Version**:
 An image identified by a stable tag and immutable digest that has passed the Smoke Contract.

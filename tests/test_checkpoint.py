@@ -719,7 +719,7 @@ class CheckpointVerificationTests(unittest.TestCase):
         self.checkout = self.root / 'checkout'
         self.checkout.mkdir()
         (self.checkout / 'docker').mkdir()
-        for name in ('compose.yaml', 'compose.s3.yaml', 'config.alloy'):
+        for name in ('compose.yaml', 'compose.s3.yaml', 'compose.proxy.yaml', 'config.alloy'):
             shutil.copy2(checkpoint.ROOT / name, self.checkout / name)
         root_patch = patch.object(checkpoint, 'ROOT', self.checkout)
         root_patch.start()

@@ -11,13 +11,13 @@ Logs, metrics and traces for everything on your host, in one Grafana. Self-hoste
 
 You run a few Docker stacks on one machine and want to see what they are doing without SSHing in and tailing logs. This stack runs the Grafana LGTM set: Loki for logs, Mimir for metrics, Tempo for traces, and Alloy as the one collector that feeds them.
 
-Alloy discovers host containers, excluding disposable smoke/drill Compose logs and ships its logs with the Compose project and service as labels. Gateway scraping is enabled by default (`OB_SCRAPE_GATEWAY=true`); set it to false when running alone. Backplane scraping is off until `OB_BACKPLANE_OPERATIONS_TOKEN` is set. Self, container, host filesystem, textfile and Backend metrics are always scraped. Grafana comes with the datasources wired, a starter dashboard and a few alert rules.
+Alloy discovers host containers, excluding disposable smoke/drill Compose logs and ships its logs with the Compose project and service as labels. Collect gateway metrics with `OB_SCRAPE_GATEWAY=true`, or Edge metrics with `OB_SCRAPE_EDGE=true` after allowing the scraper address at Edge. Both are off by default, so this stack starts on its own. Backplane scraping is off until `OB_BACKPLANE_OPERATIONS_TOKEN` is set. Self, container, host filesystem, textfile and Backend metrics are always scraped. Grafana comes with the datasources wired, a starter dashboard and a few alert rules.
 
 Everything stores to local volumes by default. An optional profile moves the backends to S3 on RustFS.
 
 ## Quick start
 
-You need Docker with the Compose plugin and Python 3.11 or newer. [mise](https://mise.jdx.dev) installs the pinned tools if you use it.
+You need a Linux Docker host with journald, Docker Compose 2.24.4 or newer, and Python 3.11 or newer. [mise](https://mise.jdx.dev) installs the pinned tools if you use it. See [logging](docs/operations/logging.md) for host prerequisites and portability.
 
 ```sh
 git clone https://github.com/autonomiceng/observability-stack.git
@@ -39,9 +39,9 @@ Bootstrap writes `.env` with a generated Grafana admin password, creates the sha
 
 Open Explore, pick Loki, and query `{compose_project="observability-stack"}`. Your own logs are already there.
 
-If the LLM gateway runs on the same host, its metrics show up under job `llm-gateway` and its logs under `compose_project="llm-gateway-stack"` with no configuration.
+If the LLM gateway runs on the same host, its logs appear automatically under `compose_project="llm-gateway-stack"`. For metrics, set `OB_SCRAPE_GATEWAY=true` and allow Alloy’s scraper address in the gateway settings. See [logging and collection](docs/operations/logging.md).
 
-To put it on the internet, set a domain, `https` and a public bind address in `.env`. See [ingress](docs/operations/ingress.md).
+Local mode offers HTTP and self-signed HTTPS. It does not force HTTP visitors onto HTTPS. To put it on the internet, set `OB_ACCESS_MODE=public`, a domain and a public bind address in `.env`. When Platform Edge handles HTTPS for this stack, select `proxy`. See [ingress](docs/operations/ingress.md).
 
 ## What's inside
 

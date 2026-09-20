@@ -74,7 +74,7 @@ def manifest(directory, env_file, mode):
 
 
 def configuration_files():
-    return [ROOT / name for name in ('compose.yaml', 'compose.s3.yaml', 'config.alloy')] + [
+    return [ROOT / name for name in ('compose.yaml', 'compose.s3.yaml', 'compose.proxy.yaml', 'config.alloy')] + [
         path for path in (ROOT / 'docker').rglob('*') if path.is_file()]
 
 
@@ -99,6 +99,8 @@ class Stack:
                         '-f', str(ROOT / 'compose.yaml')]
         if self.mode == 's3':
             self.command += ['-f', str(ROOT / 'compose.s3.yaml'), '--profile', 's3']
+        if settings.get('OB_ACCESS_MODE') == 'proxy':
+            self.command += ['-f', str(ROOT / 'compose.proxy.yaml')]
         self.config = json.loads(self.dc('config', '--format', 'json'))
         self.project = self.config['name']
         self.image = self.config['services']['caddy']['image']

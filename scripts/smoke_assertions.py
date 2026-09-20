@@ -2,7 +2,11 @@
 """HTTP assertions for smoke.sh; uses Grafana's authenticated datasource proxy."""
 
 import base64
+import http.client
 import json
+import secrets
+import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -10,6 +14,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import bootstrap
 from bootstrap import read_env
 
 
@@ -52,6 +57,9 @@ def check(env_file: Path, origin: str, project: str) -> None:
     get, api, eventually = client(env_file, origin)
     base = 'http://' + origin
     grafana = 'http://grafana.' + origin
+    lines, _ = read_env(env_file)
+    settings = {match['key']: bootstrap.unquote(match['value']) for match in map(bootstrap.ENV_LINE.match, lines) if match}
+    check_access(env_file, settings)
 
     for service in ('grafana', 'loki', 'tempo', 'mimir', 'alloy'):
         get(base + '/health/' + service)
@@ -81,9 +89,6 @@ def check(env_file: Path, origin: str, project: str) -> None:
                lambda data: data.get('status') == 'success' and any(float(row['value'][1]) == 1 for row in data['data']['result']))
     print('ok: Mimir contains successful Alloy self-scrape', flush=True)
 
-    import bootstrap
-    lines, _ = bootstrap.read_env(env_file)
-    settings = {m['key']: bootstrap.unquote(m['value']) for m in map(bootstrap.ENV_LINE.match, lines) if m}
     ingest_marker(env_file, origin, Path(settings['OB_STATE_DIR']))
     query = urllib.parse.urlencode({'query': '{compose_project="' + project + '"}',
                                    'start': str(time.time_ns() - 600 * 10**9)})
@@ -100,9 +105,56 @@ def check(env_file: Path, origin: str, project: str) -> None:
     print('Smoke Contract: PASS', flush=True)
 
 
+def check_access(env_file, settings):
+    command = ['docker', 'compose', '--env-file', str(env_file)]
+    certificate = subprocess.run(command + ['exec', '-T', 'caddy', 'cat',
+                                 '/data/caddy/pki/authorities/local/root.crt'],
+                                 check=True, capture_output=True, text=True).stdout
+    context = ssl.create_default_context(cadata=certificate)
+    for scheme in ('http', 'https'):
+        for host in ('localhost', '127.0.0.1', 'grafana.localhost'):
+            if scheme == 'https':
+                connection = bootstrap.LocalHTTPSConnection(host, port=int(settings['OB_HTTPS_PORT']), timeout=10, context=context)
+            else:
+                connection = http.client.HTTPConnection('127.0.0.1', int(settings['OB_HTTP_PORT']), timeout=10)
+            try:
+                connection.request('GET', '/login' if host.startswith('grafana.') else '/', headers={'Host': host})
+                response = connection.getresponse()
+                assert response.status == 200, (scheme, host, response.status)
+                assert response.getheader('Location') is None
+                assert response.getheader('Strict-Transport-Security') is None
+                response.read()
+            finally:
+                connection.close()
+    print('ok: local HTTP and verified HTTPS, IP root and explicit Grafana, no redirect/HSTS', flush=True)
+    marker = secrets.token_hex(12)
+    credential = secrets.token_hex(24)
+    connection = http.client.HTTPConnection('127.0.0.1', int(settings['OB_HTTP_PORT']), timeout=10)
+    try:
+        connection.request('GET', '/?token=' + credential, headers={
+            'Host': 'alias-' + marker + '.invalid', 'Authorization': 'Bearer ' + credential,
+            'Cookie': 'session=' + credential, 'X-Api-Key': credential})
+        response = connection.getresponse()
+        assert response.status == 200
+        response.read()
+        connection.request('GET', '/links.json', headers={'Host': 'alias-' + marker + '.invalid'})
+        response = connection.getresponse()
+        assert json.loads(response.read())['grafana'] == 'http://grafana.localhost:' + settings['OB_HTTP_PORT']
+    finally:
+        connection.close()
+    container = subprocess.run(command + ['ps', '-q', 'caddy'], check=True, capture_output=True, text=True).stdout.strip()
+    logs = subprocess.run(['docker', 'logs', container], check=True, capture_output=True, text=True)
+    assert credential not in logs.stdout + logs.stderr
+    entries = [json.loads(line) for line in logs.stdout.splitlines() if line.startswith('{')]
+    assert any(entry.get('request', {}).get('host') == 'alias-' + marker + '.invalid' and
+               entry['request']['uri'] == '/' for entry in entries)
+    assert all('http.log.access' not in json.loads(line).get('logger', '')
+               for line in logs.stderr.splitlines() if line.startswith('{'))
+    assert any(line.startswith('{') for line in logs.stderr.splitlines())
+    print('ok: JSON access stdout, runtime stderr, header/query redaction and configured alias links', flush=True)
+
+
 def ingest_marker(env_file, origin, state):
-    import secrets
-    import subprocess
     _, api, eventually = client(env_file, origin)
     marker = secrets.token_hex(12)
     timestamp = time.time_ns()
@@ -113,6 +165,9 @@ def ingest_marker(env_file, origin, state):
                             check=True, capture_output=True, text=True)
     image = json.loads(config.stdout)['services']['caddy']['image']
     producer = subprocess.run(['docker', 'run', '-d', '--network', 'none', '--memory', '32m',
+                              '--log-driver=journald', '--log-opt', 'cache-disabled=true',
+                              '--label', 'com.docker.compose.project=platform-edge-proof-' + marker,
+                              '--label', 'com.docker.compose.service=caddy',
                               '--entrypoint', 'sh', image, '-c',
                               'while true; do echo "checkpoint-marker-' + marker + '"; sleep 1; done'],
                              check=True, capture_output=True, text=True).stdout.strip()
@@ -128,6 +183,11 @@ def ingest_marker(env_file, origin, state):
         query_time = result['data']['result'][0]['value'][0]
         proof = {'marker': marker, 'timestamp': timestamp, 'query_time': query_time}
         verify_marker(env_file, origin, proof)
+        query = urllib.parse.urlencode({'query': '{compose_project="platform-edge-proof-' + marker + '",service="caddy"}',
+                                        'start': str(timestamp - 60 * 10**9)})
+        result = eventually('/api/datasources/proxy/uid/loki/loki/api/v1/query_range?' + query,
+                            lambda data: any(row['values'] for row in data['data']['result']))
+        assert all(not {'url', 'uri', 'path'}.intersection(row['stream']) for row in result['data']['result'])
         ingested = True
     finally:
         cleanup_failed = False

@@ -2,14 +2,21 @@
 // polls /health/<service> through the Stack Gateway. No secrets, no writes.
 (() => {
   const base = `${location.protocol}//${location.host}`;
-  const hostFor = (sub) => `${location.protocol}//${sub}.${location.host}`;
-
-  for (const a of document.querySelectorAll("[data-link]")) {
-    a.href = hostFor(a.dataset.link) + (a.dataset.path || "/");
-  }
-  for (const c of document.querySelectorAll("[data-url]")) {
-    c.textContent = hostFor(c.dataset.url) + (c.dataset.path || "");
-  }
+  const links = async () => {
+    try {
+      const response = await fetch(`${base}/links.json`, { cache: "no-store" });
+      if (!response.ok) return;
+      const configured = await response.json();
+      for (const link of document.querySelectorAll("[data-link]")) {
+        const origin = configured[link.dataset.link];
+        if (/^https?:\/\//.test(origin)) link.href = origin + (link.dataset.path || "/");
+      }
+      for (const label of document.querySelectorAll("[data-url]")) {
+        const origin = configured[label.dataset.url];
+        if (/^https?:\/\//.test(origin)) label.textContent = origin + (label.dataset.path || "");
+      }
+    } catch {}
+  };
 
   const badge = (li, state, label) => {
     const b = li.querySelector("[data-badge]");
@@ -73,6 +80,7 @@
     }
   };
 
+  links();
   versions();
   checkAll();
   // Repaint only when a check completes; no continuous animation.

@@ -5,12 +5,29 @@ Caddy is the only published entry.
 | Hostname | Upstream |
 | --- | --- |
 | `<domain>` | Stack Console and exact `/health/*` probes |
-| `grafana.<domain>` | Grafana |
+| `OB_GRAFANA_HOST` (default `grafana.<domain>`) | Grafana |
+
+Set `OB_ACCESS_MODE` before running bootstrap. Bootstrap records the browser URL protocol, Grafana hostname and Compose file selection. Run bootstrap again after changing mode.
+
+| Mode | Listeners | Certificates | HTTP behavior | Default external scheme |
+| --- | --- | --- | --- | --- |
+| Local (`local`, default) | HTTP and HTTPS | Self-signed | HTTP stays available | `http` |
+| Public (`public`) | HTTP and HTTPS | Trusted certificates for your domain | Redirect to HTTPS, except health checks | `https` |
+| Behind another gateway (`proxy`) | HTTP from the gateway | The other gateway handles HTTPS | No redirect inside this stack | `https` |
+
+`OB_SCHEME` is the browser URL protocol, independently of the listener protocol.
+It may be `http` or `https` in local/proxy mode; public mode requires `https`. The mode selects certificates and listening ports automatically.
 
 ## Local Mode
 
 Defaults are `OB_PUBLIC_DOMAIN=localhost`, `OB_SCHEME=http`, `OB_BIND_HOST=127.0.0.1`.
-Grafana is at `http://grafana.localhost`. Log in as `admin` using
+Both `http://localhost` and `https://localhost` work. The root also supports `127.0.0.1`.
+Local HTTP accepts arbitrary root hostnames, but Grafana requires its configured hostname.
+With an IP root, `OB_GRAFANA_HOST` defaults to `grafana.localhost`; set it explicitly for
+another DNS name. Console links always use the configured external origin from `/links.json`.
+No application origin is derived from the request's Host header.
+
+Grafana is at `http://grafana.localhost` by default. Log in as `admin` using
 `OB_GRAFANA_ADMIN_PASSWORD` from the private `.env` file.
 
 On a host where the gateway owns ports 80/443, choose spare ports, for example `OB_HTTP_PORT=8080` and
@@ -18,11 +35,15 @@ On a host where the gateway owns ports 80/443, choose spare ports, for example `
 `OB_PUBLIC_PORT_SUFFIX` as `:8080`; the URL is then `http://grafana.localhost:8080`.
 When changing ports later, update or clear that suffix too. If an external edge supplies the
 public ports, set the suffix to the edge's public port, independently of the internal bind.
-Behind an edge serving standard HTTPS, set `OB_SCHEME=https`, `OB_LISTEN_SCHEME=http`
-and leave `OB_PUBLIC_PORT_SUFFIX` empty. Bootstrap derives a suffix only when public and
-listener schemes match and the selected port is non-default. Readiness always probes
-`http(s)://127.0.0.1:<listen port>/health/<service>` with `Host: OB_PUBLIC_DOMAIN`.
-HTTPS sends that public name as TLS SNI and verifies its certificate.
+Bootstrap derives a suffix from the selected browser-facing protocol's published port in local
+and public modes. Proxy mode never derives an external port from the internal HTTP port.
+
+Caddy automatically issues and renews local certificates in the existing `caddy-data` volume.
+Bootstrap verifies both protocols, using only the public CA certificate in memory for HTTPS.
+It installs no host trust. Browser trust is an operator action: obtain this installation's
+`/data/caddy/pki/authorities/local/root.crt` from Caddy and trust it on the required clients.
+Never copy a CA private key or share certificate volumes between stacks. With Platform Edge,
+choose `OB_ACCESS_MODE=proxy` so Edge handles HTTPS and this stack receives HTTP.
 
 ## Public Mode
 
@@ -30,15 +51,36 @@ Point DNS for the root and `grafana.<domain>` to the host, open ports 80/443 and
 
 ```sh
 OB_PUBLIC_DOMAIN=observe.example.com
-OB_SCHEME=https
-OB_TLS_ISSUER=acme
+OB_GRAFANA_HOST=grafana.observe.example.com
+OB_ACCESS_MODE=public
+OB_SCHEME=
 OB_BIND_HOST=0.0.0.0
 ```
 
-Run bootstrap. Caddy obtains certificates and redirects HTTP to HTTPS. With
-`OB_TLS_ISSUER=internal`, install Caddy's root certificate on clients and on the bootstrap
-host before readiness checks can succeed. The certificate lives at
-`/data/caddy/pki/authorities/local/root.crt` in the Caddy container.
+Run bootstrap. Caddy obtains certificates and redirects HTTP to the configured HTTPS
+origins. Exact root health routes remain available over HTTP without a redirect; backend
+APIs remain private. Public readiness verifies the certificate with system trust and sends
+the configured hostname as TLS SNI while dialing the loopback published port.
+
+## Behind another gateway
+
+```sh
+OB_ACCESS_MODE=proxy
+OB_PUBLIC_DOMAIN=observe.example.com
+OB_GRAFANA_HOST=grafana.observe.example.com
+OB_SCHEME=https
+OB_HTTP_PORT=8080
+OB_TRUSTED_PROXIES=192.0.2.2/32
+```
+
+Replace the example peer with Edge's actual Docker source address. Bootstrap selects
+`compose.yaml:compose.proxy.yaml` (plus the S3 override when enabled); the override replaces
+the port list, publishing only HTTP. Compose 2.24.4+ supports the required `!override` tag.
+Do not bypass this selection with `-f compose.yaml` when operating a proxy installation.
+Keep a loopback bind unless direct remote HTTP access is intentional. Edge forwards to
+`ob-gateway:80`, retaining the configured root or Grafana Host and setting the external
+`X-Forwarded-Proto`. Trusted forwarding preserves HTTPS for Grafana even though its
+upstream connection is HTTP. No certificate or trust material is copied into this stack.
 
 ## Shared host
 
@@ -61,15 +103,16 @@ the project's default network, at ports 4317 (gRPC) and 4318 (HTTP). Opt-in prod
 join that network to send traces; the Platform Network cannot reach those listeners.
 
 `OB_TRUSTED_PROXIES` is empty for standalone ingress. Behind platform-edge, set it to
-only the edge's actual source IPs or dedicated proxy subnet. Detailed `/versions.json`,
+only the edge's exact source IPs (`/32` or `/128` also accepted). Subnets and symbolic ranges
+are refused. Coordinate a stable Edge peer address with its operator and update trust if
+that address changes. Detailed `/versions.json`,
 upstream health bodies and alert-delivery diagnostics require the parsed client IP to match
 `OB_OPERATOR_ALLOW`, which defaults to loopback. Other callers receive status-only responses.
 Caddy accepts forwarded client IPs only from configured trusted proxies and parses the chain
 from right to left. The edge must correctly overwrite or append the connecting client's IP.
 Untrusted peers cannot gain access by supplying an `X-Forwarded-For` header.
 
-This changes the previous direct-peer allowlist behavior: an allowlisted edge address no
-longer grants operator details to every client it forwards. List the actual operator client
+List the actual operator client
 addresses in `OB_OPERATOR_ALLOW`, separately from proxy trust in `OB_TRUSTED_PROXIES`.
 With no trusted proxy, the client address remains the connection's direct peer. Docker port
 forwarding may present the bridge address even for host loopback requests; add only a verified
