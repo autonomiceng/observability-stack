@@ -50,8 +50,8 @@ cleanup() {
 # Isolate settings from the installed stack and from the caller's Compose overrides.
 profile=${SMOKE_PROFILE:-filesystem}
 case "$profile" in
-  filesystem) profiles= ;;
-  s3) profiles=s3 ;;
+  filesystem) profiles=; rustfs_console=false ;;
+  s3) profiles=s3; rustfs_console=true ;;
   *) echo 'SMOKE_PROFILE must be filesystem or s3' >&2; exit 2 ;;
 esac
 unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES
@@ -62,6 +62,7 @@ done
 access_mode=${SMOKE_ACCESS_MODE:-local}
 trusted_peers=
 grafana_url=
+rustfs_url=
 gateway_url=
 backplane_url=
 case "$access_mode" in
@@ -69,6 +70,7 @@ case "$access_mode" in
   proxy)
     trusted_peers=192.0.2.2/32
     grafana_url=https://darkforge.tail694fe2.ts.net:8447
+    rustfs_url=https://darkforge.tail694fe2.ts.net:8451
     gateway_url=https://darkforge.tail694fe2.ts.net:8443
     backplane_url=https://darkforge.tail694fe2.ts.net:8445
     ;;
@@ -77,6 +79,8 @@ esac
 sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
     -e "s#^OB_TRUSTED_PROXIES=.*#OB_TRUSTED_PROXIES=$trusted_peers#" \
     -e "s#^OB_GRAFANA_URL=.*#OB_GRAFANA_URL=$grafana_url#" \
+    -e "s#^OB_RUSTFS_URL=.*#OB_RUSTFS_URL=$rustfs_url#" \
+    -e "s#^OB_RUSTFS_CONSOLE=.*#OB_RUSTFS_CONSOLE=$rustfs_console#" \
     -e "s#^OB_GATEWAY_URL=.*#OB_GATEWAY_URL=$gateway_url#" \
     -e "s#^OB_BACKPLANE_URL=.*#OB_BACKPLANE_URL=$backplane_url#" \
     -e "s#^OB_HTTP_PORT=.*#OB_HTTP_PORT=$http_port#" \

@@ -21,11 +21,12 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 OB_ALERTS=placeholder python3 scripts/bootstrap.py --env-file "$work/.env" --render-only >/dev/null
 OB_ALERTS=placeholder OB_ACCESS_MODE=proxy OB_TRUSTED_PROXIES=192.0.2.2/32 \
   OB_GRAFANA_URL=https://darkforge.tail694fe2.ts.net:8447 \
+  OB_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8451 \
   python3 scripts/bootstrap.py --env-file "$work/url.env" --render-only >/dev/null
 echo 'env render: PASS'
 for mode in filesystem s3 proxy proxy-s3 proxy-url proxy-url-s3; do
   if [ "$mode" = proxy-url-s3 ]; then
-    docker compose --env-file "$work/url.env" -f compose.yaml -f compose.s3.yaml -f compose.proxy.yaml --profile s3 config --format json > "$work/$mode.json"
+    OB_RUSTFS_CONSOLE=true docker compose --env-file "$work/url.env" -f compose.yaml -f compose.s3.yaml -f compose.proxy.yaml --profile s3 config --format json > "$work/$mode.json"
   elif [ "$mode" = proxy-url ]; then
     docker compose --env-file "$work/url.env" -f compose.yaml -f compose.proxy.yaml config --format json > "$work/$mode.json"
   elif [ "$mode" = proxy-s3 ]; then
@@ -79,6 +80,9 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
         for name in ('loki','tempo','mimir'):
             assert any(v.get('source', '').endswith('/s3.yaml') for v in services[name]['volumes']), name
         assert services['rustfs']['environment']['RUSTFS_OBS_LOG_DIRECTORY'] == ''
+        enabled = 'true' if path.stem == 'proxy-url-s3' else 'false'
+        assert services['rustfs']['environment']['RUSTFS_CONSOLE_ENABLE'] == enabled
+        assert services['caddy']['environment']['OB_RUSTFS_CONSOLE'] == enabled
     assert set(services) == expected, f'{path}: unexpected services'
     assert services['tempo'].get('stop_grace_period') == '45s', 'Tempo stop grace'
 PY
@@ -112,21 +116,26 @@ print('native image overrides: PASS (6 filesystem/S3 cases)')
 PY
 caddy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["caddy"]["image"])' "$work/filesystem.json")
 alloy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["alloy"]["image"])' "$work/filesystem.json")
+for enabled in false true; do
 for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'proxy observe.example.com' 'proxy darkforge.tail694fe2.ts.net'; do
   # shellcheck disable=SC2086
   set -- $mode
   url_host=
   authority=
+  rustfs_authority=
   if [ "$2" = darkforge.tail694fe2.ts.net ]; then
     url_host=$2
     authority=$2:8447
+    rustfs_authority=$2:8451
   fi
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \
     -e "OB_ACCESS_MODE=$1" -e "OB_PUBLIC_DOMAIN=$2" -e OB_GRAFANA_HOST=grafana.example.com \
-    -e OB_TRUSTED_PROXIES=192.0.2.2/32 \
+    -e OB_TRUSTED_PROXIES=192.0.2.2/32 -e OB_RUSTFS_HOST=rustfs.example.com \
+    -e "OB_RUSTFS_CONSOLE=$enabled" -e "OB_RUSTFS_URL_HOST=$url_host" -e "OB_RUSTFS_AUTHORITY=$rustfs_authority" \
     -e "OB_GRAFANA_URL_HOST=$url_host" -e "OB_GRAFANA_AUTHORITY=$authority" \
     -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" "$caddy_image" \
-    caddy adapt --validate --config /etc/caddy/Caddyfile > "$work/caddy-$1-$2.json"
+    caddy adapt --validate --config /etc/caddy/Caddyfile > "$work/caddy-$1-$2-$enabled.json"
+done
 done
 python3 - "$work" <<'PY'
 import json, sys
@@ -161,8 +170,12 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
         assert {'file_server', 'static_response'} <= handlers, (
             f'{path}: /status.json must terminate in file or empty static responses')
         assert 'Location' not in json.dumps(route), f'{path}: /status.json redirects'
-    if path.name == 'caddy-proxy-darkforge.tail694fe2.ts.net.json':
+    enabled = path.stem.endswith('-true')
+    assert ('rustfs:9001' in encoded) == (enabled or not path.name.startswith('caddy-public-'))
+    assert any('client_ip' in item for item in objects(config))
+    if path.name.startswith('caddy-proxy-darkforge.tail694fe2.ts.net-'):
         assert 'darkforge.tail694fe2.ts.net:8447' in encoded
+        assert 'darkforge.tail694fe2.ts.net:8451' in encoded
         assert 'http.request.hostport' in encoded
         assert 'grafana:3000' in encoded and '/health/grafana' in encoded
     if path.name.startswith('caddy-public-'):
@@ -173,13 +186,15 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
                    for server in servers), f'{path}: public HTTP route lacks status bypass'
     if path.name.startswith('caddy-local-'):
         assert '"module": "internal"' in encoded
-        assert '"Location"' not in encoded
+        assert '/rustfs/console/' in encoded
+        # Only the opt-in RustFS browser landing redirects; no global HTTPS redirect.
+        assert 'https://localhost' not in encoded
     for logger in config['logging']['logs'].values():
         assert logger['writer']['output'] in ('stdout', 'stderr')
         assert logger['encoder']['wrap']['format'] == 'json'
         assert logger['encoder']['fields']['request>headers']['filter'] == 'delete'
 PY
-echo 'Caddyfile (3 access modes and trusted proxy): PASS'
+echo 'Caddyfile (3 access modes, trusted proxy, RustFS off/on): PASS'
 for enabled in true false; do
 for token in '' validation-only; do
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \

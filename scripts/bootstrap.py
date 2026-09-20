@@ -184,6 +184,8 @@ def write_versions(root: Path, compose: Path, settings: dict[str, str] | None = 
     settings = settings or {}
     links = {"grafana": grafana_origin(settings)}
     links.update({key: value for key, value in doc["links"].items() if value})
+    if settings.get("OB_RUSTFS_CONSOLE") == "true":
+        links["rustfs"] = rustfs_origin(settings)
     (console / "links.json").write_text(json.dumps(links) + "\n", encoding="utf-8")
 
 
@@ -277,12 +279,20 @@ def grafana_origin(settings: dict[str, str]) -> str:
         f'{settings.get("OB_PUBLIC_PORT_SUFFIX", "")}')
 
 
-def grafana_url_config(settings: dict[str, str]) -> None:
+def rustfs_origin(settings: dict[str, str]) -> str:
+    return settings.get("OB_RUSTFS_URL") or (
+        f'{settings.get("OB_SCHEME", "http")}://'
+        f'{settings.get("OB_RUSTFS_HOST", "rustfs.localhost")}'
+        f'{settings.get("OB_PUBLIC_PORT_SUFFIX", "")}')
+
+
+def browser_url_config(settings: dict[str, str], app: str) -> None:
+    prefix = "OB_" + app.upper()
     # Validate before urlsplit, which silently strips some whitespace characters.
-    origin = settings.get("OB_GRAFANA_URL", "")
-    settings["OB_GRAFANA_URL"] = origin
-    settings["OB_GRAFANA_URL_HOST"] = ""
-    settings["OB_GRAFANA_AUTHORITY"] = ""
+    origin = settings.get(prefix + "_URL", "")
+    settings[prefix + "_URL"] = origin
+    settings[prefix + "_URL_HOST"] = ""
+    settings[prefix + "_AUTHORITY"] = ""
     if not origin:
         return
     try:
@@ -311,13 +321,13 @@ def grafana_url_config(settings: dict[str, str]) -> None:
         if settings["OB_ACCESS_MODE"] == "public" and url.scheme != "https":
             raise ValueError
     except ValueError as error:
-        raise Refused("grafana_url_invalid", "OB_GRAFANA_URL must be an HTTP(S) origin with no path, "
+        raise Refused(app + "_url_invalid", prefix + "_URL must be an HTTP(S) origin with no path, "
                       "credentials, query or fragment; public mode requires HTTPS") from error
     if port == (443 if url.scheme == "https" else 80):
         authority = authority_host
-    settings["OB_GRAFANA_URL"] = url.scheme + "://" + authority
-    settings["OB_GRAFANA_URL_HOST"] = host
-    settings["OB_GRAFANA_AUTHORITY"] = authority
+    settings[prefix + "_URL"] = url.scheme + "://" + authority
+    settings[prefix + "_URL_HOST"] = host
+    settings[prefix + "_AUTHORITY"] = authority
 
 
 def access_config(settings: dict[str, str]) -> None:
@@ -337,14 +347,22 @@ def access_config(settings: dict[str, str]) -> None:
     except ValueError:
         ip_root = False
     settings["OB_GRAFANA_HOST"] = settings.get("OB_GRAFANA_HOST") or ("grafana.localhost" if ip_root else "grafana." + domain)
-    for host in (domain, settings["OB_GRAFANA_HOST"]):
+    rustfs_host = settings.get("OB_RUSTFS_HOST")
+    settings["OB_RUSTFS_HOST"] = rustfs_host or ("rustfs.localhost" if ip_root else "rustfs." + domain)
+    hosts = (domain, settings["OB_GRAFANA_HOST"])
+    if settings.get("OB_RUSTFS_CONSOLE") == "true" or rustfs_host:
+        hosts += (settings["OB_RUSTFS_HOST"],)
+    for host in hosts:
         if len(host) > 253 or any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
                for label in host.split(".")):
-            raise Refused("access_host_invalid", "root and Grafana hosts must be explicit DNS names or an IPv4 root")
-    if domain == settings["OB_GRAFANA_HOST"]:
-        raise Refused("access_host_invalid", "Grafana requires a separate hostname")
+            raise Refused("access_host_invalid", "root and application hosts must be explicit DNS names or an IPv4 root")
+    if len(set(host.lower() for host in hosts)) != len(hosts):
+        raise Refused("access_host_invalid", "applications require separate internal hostnames")
     if mode == "public":
-        for host in (domain, settings["OB_GRAFANA_HOST"]):
+        public_hosts = (domain, settings["OB_GRAFANA_HOST"])
+        if settings.get("OB_RUSTFS_CONSOLE") == "true":
+            public_hosts += (settings["OB_RUSTFS_HOST"],)
+        for host in public_hosts:
             try:
                 ipaddress.ip_address(host)
                 public_ip = True
@@ -359,7 +377,23 @@ def access_config(settings: dict[str, str]) -> None:
         port = settings.get(key, "80" if key == "OB_HTTP_PORT" else "443")
         if not port.isdigit() or not 1 <= int(port) <= 65535:
             raise Refused("access_port_invalid", key + " must be a port number")
-    grafana_url_config(settings)
+    browser_url_config(settings, "grafana")
+    browser_url_config(settings, "rustfs")
+    enabled = settings.get("OB_RUSTFS_CONSOLE") or "false"
+    if enabled not in ("true", "false"):
+        raise Refused("rustfs_console_invalid", "OB_RUSTFS_CONSOLE must be true or false")
+    settings["OB_RUSTFS_CONSOLE"] = enabled
+    if enabled == "true" and "s3" not in settings.get("COMPOSE_PROFILES", "").split(","):
+        raise Refused("rustfs_console_requires_s3", "enable the console only on an existing S3 installation; "
+                      "storage changes require an explicit migration")
+    # Proxy routing compares authorities; the scheme cannot distinguish routes.
+    origins = (rustfs_origin(settings), grafana_origin(settings),
+               settings["OB_SCHEME"] + "://" + domain + suffix)
+    urls = [urllib.parse.urlsplit(origin) for origin in origins]
+    authorities = [url.netloc.lower().removesuffix(":443" if url.scheme == "https" else ":80")
+                   for url in urls]
+    if authorities[0] in authorities[1:]:
+        raise Refused("rustfs_origin_conflict", "RustFS requires a separate browser authority")
     peers = settings.get("OB_TRUSTED_PROXIES", "").split()
     if mode == "proxy" and not peers:
         raise Refused("proxy_trust_required", "set OB_TRUSTED_PROXIES to exact Platform Edge peer IPs")
@@ -519,6 +553,8 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
             "OB_BIND_HOST", "OB_HTTP_PORT", "OB_HTTPS_PORT", "OB_PUBLIC_PORT_SUFFIX",
             "OB_TRUSTED_PROXIES", "OB_OPERATOR_ALLOW", "OB_GRAFANA_URL",
             "OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY", "COMPOSE_FILE", "COMPOSE_PROFILES",
+            "OB_RUSTFS_CONSOLE", "OB_RUSTFS_HOST", "OB_RUSTFS_URL",
+            "OB_RUSTFS_URL_HOST", "OB_RUSTFS_AUTHORITY",
         )
         lines = env_file.read_text().splitlines()
         for key in saved_keys:

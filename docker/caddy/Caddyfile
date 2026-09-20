@@ -47,6 +47,28 @@
 	reverse_proxy {args[0]}
 }
 
+# The console's assets, STS, SigV4 and admin API share one origin on port 9001.
+(rustfs-access) {
+	@disabled expression `'{$OB_RUSTFS_CONSOLE:false}' != 'true'`
+	respond @disabled "" 404
+	@denied not client_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
+	respond @denied "" 404
+}
+
+(rustfs-routes) {
+	route {
+		import rustfs-access
+		@landing {
+			path /
+			method GET HEAD
+			header Accept *text/html*
+		}
+		redir @landing /rustfs/console/ 302
+		# Preserve Host including port. Caddy trusts forwarding only from configured peers.
+		reverse_proxy rustfs:9001
+	}
+}
+
 (health) {
 	@operator client_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
 	handle @operator {
@@ -166,10 +188,28 @@
 	}
 }
 
+(rustfs-tls-local-false) {
+}
+
+(rustfs-tls-local-true) {
+	https://{$OB_RUSTFS_HOST:rustfs.localhost} {
+		tls internal
+		header -Strict-Transport-Security
+		import access-log
+		import rustfs-routes
+	}
+}
+
 (access-local) {
+	import rustfs-tls-local-{$OB_RUSTFS_CONSOLE:false}
 	:80 {
 		header -Strict-Transport-Security
 		import console
+	}
+	http://{$OB_RUSTFS_HOST:rustfs.localhost} {
+		header -Strict-Transport-Security
+		import access-log
+		import rustfs-routes
 	}
 	http://{$OB_GRAFANA_HOST:grafana.localhost} {
 		header -Strict-Transport-Security
@@ -187,7 +227,28 @@
 	}
 }
 
+(rustfs-tls-public-false) {
+}
+
+(rustfs-tls-public-true) {
+	https://{$OB_RUSTFS_HOST:rustfs.localhost} {
+		tls {
+			issuer acme
+		}
+		import access-log
+		import rustfs-routes
+	}
+}
+
 (access-public) {
+	import rustfs-tls-public-{$OB_RUSTFS_CONSOLE:false}
+	http://{$OB_RUSTFS_HOST:rustfs.localhost} {
+		import access-log
+		route {
+			import rustfs-access
+			redir https://{$OB_RUSTFS_HOST:rustfs.localhost}{$OB_PUBLIC_PORT_SUFFIX}{uri} 308
+		}
+	}
 	http://{$OB_PUBLIC_DOMAIN} {
 		import access-log
 		import probes
@@ -217,7 +278,11 @@
 	:80 {
 		import access-log
 		# Host matchers ignore ports. The external origin must match its full authority.
-		@grafana expression `(host('{$OB_GRAFANA_HOST}') && !host('{$OB_GRAFANA_URL_HOST:unused.invalid}')) || {http.request.hostport} == '{$OB_GRAFANA_AUTHORITY}'`
+		@grafana expression `(host('{$OB_GRAFANA_HOST}') && !host('{$OB_GRAFANA_URL_HOST:unused.invalid}') && !host('{$OB_RUSTFS_URL_HOST:unused.invalid}')) || {http.request.hostport} == '{$OB_GRAFANA_AUTHORITY}'`
+		@rustfs expression `(host('{$OB_RUSTFS_HOST:rustfs.localhost}') && !host('{$OB_RUSTFS_URL_HOST:unused.invalid}') && !host('{$OB_GRAFANA_URL_HOST:unused.invalid}')) || {http.request.hostport} == '{$OB_RUSTFS_AUTHORITY}'`
+		handle @rustfs {
+			import rustfs-routes
+		}
 		handle @grafana {
 			import app-routes grafana:3000
 		}
