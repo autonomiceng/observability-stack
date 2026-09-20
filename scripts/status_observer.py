@@ -181,7 +181,7 @@ def collect(root, env_file, config, configured_at, state_dir, runner, clock=now)
 
 
 def observe(root, env_file, runner=run, clock=now):
-    root, env_file = Path(root).absolute(), Path(env_file).absolute()
+    root, env_file = Path(root).resolve(), Path(env_file).resolve()
     if not (root / 'compose.yaml').is_file() or not env_file.is_file():
         raise Unavailable()
     env = environment()
@@ -207,7 +207,7 @@ def observe(root, env_file, runner=run, clock=now):
             if len(document['components']) > 32:
                 raise Unavailable()
             with directory(console) as public:
-                publish(public, 'status.json', document)
+                publish(public, 'status.json', document, serialized=True)
         finally:
             os.close(lock)
     return document

@@ -196,6 +196,29 @@ class ObserverTests(unittest.TestCase):
                 self.assertEqual(self.rows(self.observe())['loki']['state'], 'unknown')
             self.probe.assert_not_called()
 
+    def test_conflicting_docker_host_and_context_cannot_enable_ip_probes(self):
+        cases = [
+            ('tcp://remote.example:2375', 'local-rootful', 'unix:///var/run/docker.sock'),
+            ('unix:///var/run/docker.sock', 'remote', 'ssh://remote.example'),
+            ('unix:///var/run/docker.sock', 'other-local', 'unix:///run/docker.sock'),
+        ]
+        for docker_host, docker_context, inspected in cases:
+            with self.subTest(docker_host=docker_host, docker_context=docker_context,
+                              inspected=inspected):
+                self.fake.endpoint = inspected
+                self.probe.reset_mock()
+                with patch.dict(os.environ, {'DOCKER_HOST': docker_host,
+                                             'DOCKER_CONTEXT': docker_context}, clear=True):
+                    self.assertEqual(self.rows(self.observe())['loki']['state'], 'unknown')
+                self.probe.assert_not_called()
+
+    def test_consistent_local_docker_host_and_context_allow_ip_probes(self):
+        self.fake.endpoint = 'unix:///var/run/docker.sock'
+        with patch.dict(os.environ, {'DOCKER_HOST': self.fake.endpoint,
+                                     'DOCKER_CONTEXT': 'local-rootful'}, clear=True):
+            self.assertEqual(self.rows(self.observe())['loki']['state'], 'healthy')
+        self.probe.assert_called()
+
     def test_rustfs_disabled_requires_marker_and_reviewed_backend_configs(self):
         self.fake.config['services'].pop('rustfs')
         self.assertEqual(self.rows(self.observe())['rustfs']['state'], 'unknown')
@@ -224,6 +247,18 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual((row['state'], row['lastExecutionAt'], row['observedAt']), ('healthy', START, AT))
         task_record(self.root / 'custom-state', self.root, self.env, START, 'unknown')
         self.assertEqual(self.rows(self.observe())['bootstrap']['state'], 'unknown')
+
+    def test_symlinked_checkout_and_env_match_canonical_bootstrap_record(self):
+        link = self.root.parent / (self.root.name + '-checkout')
+        link.symlink_to(self.root, target_is_directory=True)
+        self.addCleanup(link.unlink)
+        task_record(self.root / 'custom-state', self.root.resolve(), self.env.resolve(),
+                    START, 'healthy')
+        document = observer.observe(link, link / self.env.name, self.fake, lambda: AT)
+        row = self.rows(document)['bootstrap']
+        self.assertEqual((row['state'], row['lastExecutionAt']), ('healthy', START))
+        self.assertTrue(all(options['cwd'] == self.root.resolve()
+                            for _, options in self.fake.calls))
 
     def test_task_success_failure_running_and_future_start(self):
         self.fake.config['services']['rustfs-init'] = {'image': 'private/SECRET'}

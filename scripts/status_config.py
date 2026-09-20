@@ -96,11 +96,14 @@ def filesystem_off(config, state_dir):
 def local_bridge(config, runner, env):
     """Remote/rootless contexts cannot justify dialing container IPs on this host."""
     try:
-        endpoint = env.get('DOCKER_HOST') if not env.get('DOCKER_CONTEXT') else None
-        if not endpoint:
-            contexts = read_json(runner(['docker', 'context', 'inspect'], timeout=4, limit=65536))
-            endpoint = contexts[0]['Endpoints']['docker']['Host']
+        explicit = env.get('DOCKER_HOST')
+        if explicit and not explicit.startswith('unix:///'):
+            return None
+        contexts = read_json(runner(['docker', 'context', 'inspect'], timeout=4, limit=65536))
+        endpoint = contexts[0]['Endpoints']['docker']['Host']
         if not endpoint.startswith('unix:///'):
+            return None
+        if explicit and endpoint != explicit:
             return None
         security = read_json(runner(['docker', 'info', '--format', '{{json .SecurityOptions}}'],
                                     timeout=4, limit=65536))
