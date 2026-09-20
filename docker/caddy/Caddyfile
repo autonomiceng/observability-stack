@@ -278,8 +278,8 @@
 	:80 {
 		import access-log
 		# Host matchers ignore ports. The external origin must match its full authority.
-		@grafana expression `(host('{$OB_GRAFANA_HOST}') && !host('{$OB_GRAFANA_URL_HOST:unused.invalid}') && !host('{$OB_RUSTFS_URL_HOST:unused.invalid}')) || {http.request.hostport} == '{$OB_GRAFANA_AUTHORITY}'`
-		@rustfs expression `(host('{$OB_RUSTFS_HOST:rustfs.localhost}') && !host('{$OB_RUSTFS_URL_HOST:unused.invalid}') && !host('{$OB_GRAFANA_URL_HOST:unused.invalid}')) || {http.request.hostport} == '{$OB_RUSTFS_AUTHORITY}'`
+		@grafana expression `(host('{$OB_GRAFANA_HOST}') && !host('{$OB_GRAFANA_URL_HOST:unused.invalid}')) || {http.request.hostport} == '{$OB_GRAFANA_AUTHORITY}'`
+		@rustfs expression `(host('{$OB_RUSTFS_HOST:rustfs.localhost}') && !host('{$OB_RUSTFS_URL_HOST:unused.invalid}')) || {http.request.hostport} == '{$OB_RUSTFS_AUTHORITY}'`
 		handle @rustfs {
 			import rustfs-routes
 		}

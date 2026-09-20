@@ -347,11 +347,9 @@ def access_config(settings: dict[str, str]) -> None:
     except ValueError:
         ip_root = False
     settings["OB_GRAFANA_HOST"] = settings.get("OB_GRAFANA_HOST") or ("grafana.localhost" if ip_root else "grafana." + domain)
-    rustfs_host = settings.get("OB_RUSTFS_HOST")
-    settings["OB_RUSTFS_HOST"] = rustfs_host or ("rustfs.localhost" if ip_root else "rustfs." + domain)
-    hosts = (domain, settings["OB_GRAFANA_HOST"])
-    if settings.get("OB_RUSTFS_CONSOLE") == "true" or rustfs_host:
-        hosts += (settings["OB_RUSTFS_HOST"],)
+    settings["OB_RUSTFS_HOST"] = settings.get("OB_RUSTFS_HOST") or ("rustfs.localhost" if ip_root else "rustfs." + domain)
+    # Disabled RustFS still reserves an HTTP site returning 404. Validate that host too.
+    hosts = (domain, settings["OB_GRAFANA_HOST"], settings["OB_RUSTFS_HOST"])
     for host in hosts:
         if len(host) > 253 or any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
                for label in host.split(".")):
@@ -379,6 +377,9 @@ def access_config(settings: dict[str, str]) -> None:
             raise Refused("access_port_invalid", key + " must be a port number")
     browser_url_config(settings, "grafana")
     browser_url_config(settings, "rustfs")
+    if (settings["OB_RUSTFS_URL_HOST"] == settings["OB_GRAFANA_HOST"].lower() or
+            settings["OB_GRAFANA_URL_HOST"] == settings["OB_RUSTFS_HOST"].lower()):
+        raise Refused("rustfs_origin_conflict", "browser origins must not reuse another application's internal hostname")
     enabled = settings.get("OB_RUSTFS_CONSOLE") or "false"
     if enabled not in ("true", "false"):
         raise Refused("rustfs_console_invalid", "OB_RUSTFS_CONSOLE must be true or false")

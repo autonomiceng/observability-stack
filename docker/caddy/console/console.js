@@ -11,8 +11,10 @@
         const origin = configured[link.dataset.link];
         if (/^https?:\/\//.test(origin)) {
           link.href = origin + (link.dataset.path || "/");
-          link.removeAttribute("aria-disabled");
         }
+      }
+      for (const card of document.querySelectorAll("[data-optional-link]")) {
+        card.hidden = !/^https?:\/\//.test(configured[card.dataset.optionalLink]);
       }
       for (const link of document.querySelectorAll("[data-external]")) {
         const url = configured[link.dataset.external];

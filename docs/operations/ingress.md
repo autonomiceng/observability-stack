@@ -147,11 +147,13 @@ Bootstrap refuses enablement without the existing `s3` profile; it never selects
 or migrates storage for the console. Keep existing secrets, volumes, state and Compose
 profiles. A filesystem installation needs an explicit storage migration before this
 feature can be used. The shipped RustFS pin and `OB_RUSTFS_IMAGE` override are unchanged.
+Toggling the flag recreates RustFS and Caddy and can briefly fail S3 writes; schedule the
+interruption and take a [Checkpoint](backup.md) before changing the setting.
 
 Standalone ingress uses `rustfs.<domain>` (`rustfs.localhost` for an IP root), with an
 optional `OB_RUSTFS_HOST` override. Its links follow the existing scheme and port suffix.
 Local Mode supports HTTP and internal-CA HTTPS; Public Mode requires DNS for this extra
-hostname and issues its certificate only when enabled. Disabling removes the link and
+hostname and issues its certificate only when enabled. Disabling hides the console card and
 returns 404 through HTTP/proxy ingress; standalone RustFS HTTPS is provisioned only while
 enabled. No additional listener or published port is needed.
 
@@ -168,7 +170,8 @@ Use the proxy settings above. `OB_RUSTFS_URL` follows the same strict origin rul
 `OB_GRAFANA_URL`; bootstrap saves `OB_RUSTFS_URL_HOST` and `OB_RUSTFS_AUTHORITY` as derived
 values. Grafana on `:8447`, the Stack Console on `:8446`, and RustFS on `:8451` can share
 one hostname. Authorities must be distinct. Internal application hostnames stay separate
-from the shared external hostname. The URL configures routing and links; Edge owns the
+from the shared external hostname; bootstrap rejects cross-application hostname reuse,
+even when the console is disabled. The URL configures routing and links; Edge owns the
 external listener and certificate.
 
 Platform Edge's follow-up reserves private HTTPS port 8451 and forwards its **whole

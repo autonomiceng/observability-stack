@@ -340,11 +340,11 @@ class BootstrapTests(unittest.TestCase):
                     self.assertEqual(ctx.exception.code, "access_host_invalid")
 
     def test_access_enforces_complete_hostname_length(self):
-        for key in ("OB_PUBLIC_DOMAIN", "OB_GRAFANA_HOST"):
+        for key in ("OB_PUBLIC_DOMAIN", "OB_GRAFANA_HOST", "OB_RUSTFS_HOST"):
             for length in (253, 254):
                 host = ".".join(["a" * 63] * 3 + ["b" * (length - 192)])
                 settings = {"OB_ACCESS_MODE": "public", "OB_PUBLIC_DOMAIN": "observe.example.com",
-                            "OB_GRAFANA_HOST": "grafana.example.com", key: host}
+                            "OB_GRAFANA_HOST": "grafana.example.com", "OB_RUSTFS_HOST": "rustfs.example.com", key: host}
                 with self.subTest(key=key, length=length):
                     if length == 253:
                         bootstrap.access_config(settings)
@@ -545,6 +545,21 @@ class BootstrapTests(unittest.TestCase):
             bootstrap.access_config({"OB_RUSTFS_CONSOLE": "yes"})
         self.assertEqual(refused.exception.code, "rustfs_console_invalid")
 
+        # Even disabled origins reserve a Caddy site: validate derived names before writing.
+        derived_limit = ".".join(["a" * 63] * 3 + ["b" * 54])
+        valid = {"OB_PUBLIC_DOMAIN": derived_limit, "OB_GRAFANA_HOST": "grafana.example.com"}
+        bootstrap.access_config(valid)
+        self.assertEqual(len(valid["OB_RUSTFS_HOST"]), 253)
+        for overrides in ({"OB_PUBLIC_DOMAIN": derived_limit + "b", "OB_GRAFANA_HOST": "grafana.example.com"},
+                          {"OB_PUBLIC_DOMAIN": "example.com", "OB_GRAFANA_HOST": "rustfs.example.com",
+                           "OB_GRAFANA_URL": "https://machine.example.com:8447"}):
+            self.env.write_text("".join(f"{key}={value}\n" for key, value in overrides.items()))
+            before = self.env.read_bytes()
+            with self.assertRaises(bootstrap.Refused) as refused:
+                self.render()
+            self.assertEqual(refused.exception.code, "access_host_invalid")
+            self.assertEqual(self.env.read_bytes(), before)
+
     def test_rustfs_full_authority_and_untrusted_configuration(self):
         settings = {"OB_ACCESS_MODE": "proxy", "OB_TRUSTED_PROXIES": "192.0.2.2/32",
                     "OB_PUBLIC_DOMAIN": "machine.example.com", "OB_PUBLIC_PORT_SUFFIX": ":8446",
@@ -562,6 +577,12 @@ class BootstrapTests(unittest.TestCase):
         for value in (settings["OB_GRAFANA_URL"], "https://machine.example.com:8446"):
             with self.assertRaises(bootstrap.Refused) as refused:
                 bootstrap.access_config(settings | {"OB_RUSTFS_URL": value})
+            self.assertEqual(refused.exception.code, "rustfs_origin_conflict")
+        # Cross-app aliases collide even at different ports and with the console off.
+        for overrides in ({"OB_GRAFANA_URL": "", "OB_GRAFANA_HOST": "Machine.Example.com"},
+                          {"OB_RUSTFS_URL": "", "OB_RUSTFS_HOST": "Machine.Example.com"}):
+            with self.assertRaises(bootstrap.Refused) as refused:
+                bootstrap.access_config(settings | {"OB_PUBLIC_DOMAIN": "observe.example.com"} | overrides)
             self.assertEqual(refused.exception.code, "rustfs_origin_conflict")
         with self.assertRaises(bootstrap.Refused) as refused:
             bootstrap.access_config(settings | {"OB_PUBLIC_PORT_SUFFIX": ":443",

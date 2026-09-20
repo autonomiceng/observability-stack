@@ -166,6 +166,14 @@ def check_rustfs_console(settings):
         finally:
             connection.close()
 
+    if settings['OB_ACCESS_MODE'] == 'proxy':
+        wrong_authority = urllib.parse.urlsplit(origin).hostname + ':8452'
+        status, location, body = request('/', host=wrong_authority)
+        assert status == 200 and location is None and b'Observability Stack' in body, wrong_authority
+        assert request('/rustfs/admin/v3/accountinfo', host=wrong_authority)[0] == 404
+        assert request('/rustfs/console/', host=wrong_authority,
+                       headers={'X-Forwarded-Host': authority})[0] == 404
+
     if settings['OB_RUSTFS_CONSOLE'] != 'true':
         for path in ('/', '/rustfs/console/', '/rustfs/admin/v3/accountinfo', '/?Action=AssumeRole'):
             assert request(path)[0] == 404, path
@@ -190,11 +198,6 @@ def check_rustfs_console(settings):
     # A direct, untrusted caller cannot replace its allowed peer identity or route via forwarding headers.
     assert request('/rustfs/console/', headers={'X-Forwarded-For': '203.0.113.200',
                    'X-Forwarded-Host': 'spoof.invalid:8451', 'X-Forwarded-Proto': 'https'})[0] == 200
-    if settings['OB_ACCESS_MODE'] == 'proxy':
-        wrong_authority = urllib.parse.urlsplit(origin).hostname + ':8452'
-        assert request('/rustfs/admin/v3/accountinfo', host=wrong_authority)[0] == 404
-        assert request('/rustfs/console/', host=wrong_authority,
-                       headers={'X-Forwarded-Host': authority})[0] == 404
     print(f'ok: RustFS whole origin, {len(assets)} assets, HTML-only landing, unsigned admin denial and spoof isolation', flush=True)
 
 

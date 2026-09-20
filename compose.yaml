@@ -187,6 +187,8 @@ services:
       RUSTFS_SECRET_KEY: ${OB_S3_SECRET_KEY:?run scripts/bootstrap.py}
       RUSTFS_ADDRESS: ":9000"
       RUSTFS_CONSOLE_ENABLE: ${OB_RUSTFS_CONSOLE:-false}
+      # Caddy forwards the complete console origin to this private listener.
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
       RUSTFS_OBS_LOG_DIRECTORY: ""
       RUSTFS_OBS_LOG_STDOUT_ENABLED: "true"
     volumes:

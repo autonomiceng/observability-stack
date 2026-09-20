@@ -82,6 +82,7 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
         assert services['rustfs']['environment']['RUSTFS_OBS_LOG_DIRECTORY'] == ''
         enabled = 'true' if path.stem == 'proxy-url-s3' else 'false'
         assert services['rustfs']['environment']['RUSTFS_CONSOLE_ENABLE'] == enabled
+        assert services['rustfs']['environment']['RUSTFS_CONSOLE_ADDRESS'] == ':9001'
         assert services['caddy']['environment']['OB_RUSTFS_CONSOLE'] == enabled
     assert set(services) == expected, f'{path}: unexpected services'
     assert services['tempo'].get('stop_grace_period') == '45s', 'Tempo stop grace'
@@ -131,6 +132,7 @@ for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'pr
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \
     -e "OB_ACCESS_MODE=$1" -e "OB_PUBLIC_DOMAIN=$2" -e OB_GRAFANA_HOST=grafana.example.com \
     -e OB_TRUSTED_PROXIES=192.0.2.2/32 -e OB_RUSTFS_HOST=rustfs.example.com \
+    -e "OB_OPERATOR_ALLOW=100.100.1.2/32 fd7a:115c:a1e0::1/128" \
     -e "OB_RUSTFS_CONSOLE=$enabled" -e "OB_RUSTFS_URL_HOST=$url_host" -e "OB_RUSTFS_AUTHORITY=$rustfs_authority" \
     -e "OB_GRAFANA_URL_HOST=$url_host" -e "OB_GRAFANA_AUTHORITY=$authority" \
     -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" "$caddy_image" \
@@ -172,7 +174,26 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
         assert 'Location' not in json.dumps(route), f'{path}: /status.json redirects'
     enabled = path.stem.endswith('-true')
     assert ('rustfs:9001' in encoded) == (enabled or not path.name.startswith('caddy-public-'))
-    assert any('client_ip' in item for item in objects(config))
+    # Check the ordered route containing each RustFS proxy, not unrelated health gates.
+    rustfs_proxies = [item for item in objects(config) if item.get('handler') == 'reverse_proxy'
+                     and {'dial': 'rustfs:9001'} in item.get('upstreams', [])]
+    assert bool(rustfs_proxies) == ('rustfs:9001' in encoded), f'{path}: missing RustFS proxy assertion target'
+    protected = 0
+    denial_match = [{'not': [{'client_ip': {'ranges': ['100.100.1.2/32', 'fd7a:115c:a1e0::1/128']}}]}]
+    for item in objects(config):
+        if item.get('handler') != 'subroute':
+            continue
+        routes = item.get('routes', [])
+        for index, route in enumerate(routes):
+            for handler in route.get('handle', []):
+                if handler not in rustfs_proxies:
+                    continue
+                assert any(earlier.get('match') == denial_match and
+                           any(response.get('handler') == 'static_response' and
+                               str(response.get('status_code')) == '404' for response in earlier.get('handle', []))
+                           for earlier in routes[:index]), f'{path}: RustFS proxy lacks a preceding operator denial'
+                protected += 1
+    assert protected == len(rustfs_proxies), f'{path}: RustFS proxy outside the gated route'
     if path.name.startswith('caddy-proxy-darkforge.tail694fe2.ts.net-'):
         assert 'darkforge.tail694fe2.ts.net:8447' in encoded
         assert 'darkforge.tail694fe2.ts.net:8451' in encoded
@@ -187,8 +208,10 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
     if path.name.startswith('caddy-local-'):
         assert '"module": "internal"' in encoded
         assert '/rustfs/console/' in encoded
-        # Only the opt-in RustFS browser landing redirects; no global HTTPS redirect.
-        assert 'https://localhost' not in encoded
+        # Every local redirect must be the relative native-console landing.
+        locations = [value for item in objects(config) if item.get('handler') == 'static_response'
+                     for key, value in item.get('headers', {}).items() if key.lower() == 'location']
+        assert all(value == ['/rustfs/console/'] for value in locations), f'{path}: unexpected local redirect'
     for logger in config['logging']['logs'].values():
         assert logger['writer']['output'] in ('stdout', 'stderr')
         assert logger['encoder']['wrap']['format'] == 'json'
