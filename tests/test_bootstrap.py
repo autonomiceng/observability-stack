@@ -340,11 +340,11 @@ class BootstrapTests(unittest.TestCase):
                     self.assertEqual(ctx.exception.code, "access_host_invalid")
 
     def test_access_enforces_complete_hostname_length(self):
-        for key in ("OB_PUBLIC_DOMAIN", "OB_GRAFANA_HOST"):
+        for key in ("OB_PUBLIC_DOMAIN", "OB_GRAFANA_HOST", "OB_RUSTFS_HOST"):
             for length in (253, 254):
                 host = ".".join(["a" * 63] * 3 + ["b" * (length - 192)])
                 settings = {"OB_ACCESS_MODE": "public", "OB_PUBLIC_DOMAIN": "observe.example.com",
-                            "OB_GRAFANA_HOST": "grafana.example.com", key: host}
+                            "OB_GRAFANA_HOST": "grafana.example.com", "OB_RUSTFS_HOST": "rustfs.example.com", key: host}
                 with self.subTest(key=key, length=length):
                     if length == 253:
                         bootstrap.access_config(settings)
@@ -521,6 +521,107 @@ class BootstrapTests(unittest.TestCase):
                 expected.update(gateway=settings["OB_GATEWAY_URL"], backplane=settings["OB_BACKPLANE_URL"])
             self.assertEqual(json.loads((self.root / "data/console/links.json").read_text()), expected)
             self.assertEqual(settings["OB_TRUSTED_PROXIES"], "192.0.2.2/32")
+
+    def test_rustfs_console_off_on_s3_and_filesystem_refusal(self):
+        for profile in ("", "s3"):
+            settings = {"COMPOSE_PROFILES": profile, "OB_STATE_DIR": str(self.root)}
+            bootstrap.access_config(settings)
+            self.assertEqual(settings["OB_RUSTFS_CONSOLE"], "false")
+            bootstrap.write_versions(self.root, self.template.parent / "compose.yaml", settings, services={})
+            self.assertNotIn("rustfs", json.loads((self.root / "console/links.json").read_text()))
+        settings["OB_RUSTFS_CONSOLE"] = "true"
+        bootstrap.access_config(settings)
+        self.assertEqual(bootstrap.rustfs_origin(settings), "http://rustfs.localhost")
+        bootstrap.write_versions(self.root, self.template.parent / "compose.yaml", settings, services={})
+        self.assertEqual(json.loads((self.root / "console/links.json").read_text())["rustfs"],
+                         "http://rustfs.localhost")
+        self.env.write_text("OB_RUSTFS_CONSOLE=true\n")
+        before = self.env.read_bytes()
+        with self.assertRaises(bootstrap.Refused) as refused:
+            self.render()
+        self.assertEqual(refused.exception.code, "rustfs_console_requires_s3")
+        self.assertEqual(self.env.read_bytes(), before)
+        with self.assertRaises(bootstrap.Refused) as refused:
+            bootstrap.access_config({"OB_RUSTFS_CONSOLE": "yes"})
+        self.assertEqual(refused.exception.code, "rustfs_console_invalid")
+
+        # Even disabled origins reserve a Caddy site: validate derived names before writing.
+        derived_limit = ".".join(["a" * 63] * 3 + ["b" * 54])
+        valid = {"OB_PUBLIC_DOMAIN": derived_limit, "OB_GRAFANA_HOST": "grafana.example.com"}
+        bootstrap.access_config(valid)
+        self.assertEqual(len(valid["OB_RUSTFS_HOST"]), 253)
+        for overrides in ({"OB_PUBLIC_DOMAIN": derived_limit + "b", "OB_GRAFANA_HOST": "grafana.example.com"},
+                          {"OB_PUBLIC_DOMAIN": "example.com", "OB_GRAFANA_HOST": "rustfs.example.com",
+                           "OB_GRAFANA_URL": "https://machine.example.com:8447"}):
+            self.env.write_text("".join(f"{key}={value}\n" for key, value in overrides.items()))
+            before = self.env.read_bytes()
+            with self.assertRaises(bootstrap.Refused) as refused:
+                self.render()
+            self.assertEqual(refused.exception.code, "access_host_invalid")
+            self.assertEqual(self.env.read_bytes(), before)
+
+    def test_rustfs_full_authority_and_untrusted_configuration(self):
+        settings = {"OB_ACCESS_MODE": "proxy", "OB_TRUSTED_PROXIES": "192.0.2.2/32",
+                    "OB_PUBLIC_DOMAIN": "machine.example.com", "OB_PUBLIC_PORT_SUFFIX": ":8446",
+                    "OB_GRAFANA_URL": "https://machine.example.com:8447",
+                    "OB_RUSTFS_URL": "https://machine.example.com:8451"}
+        bootstrap.access_config(settings)
+        self.assertEqual(settings["OB_RUSTFS_AUTHORITY"], "machine.example.com:8451")
+        self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "machine.example.com:8447")
+        self.assertEqual(settings["OB_RUSTFS_URL_HOST"], "machine.example.com")
+        for value in ("https://user:secret@machine.example.com:8451", "https://machine.example.com/path",
+                      "https://machine.example.com:8451'", "https://machine.example.com\n"):
+            with self.assertRaises(bootstrap.Refused) as refused:
+                bootstrap.access_config(settings | {"OB_RUSTFS_URL": value})
+            self.assertEqual(refused.exception.code, "rustfs_url_invalid")
+        for value in (settings["OB_GRAFANA_URL"], "https://machine.example.com:8446"):
+            with self.assertRaises(bootstrap.Refused) as refused:
+                bootstrap.access_config(settings | {"OB_RUSTFS_URL": value})
+            self.assertEqual(refused.exception.code, "rustfs_origin_conflict")
+        # Cross-app aliases collide even at different ports and with the console off.
+        for overrides in ({"OB_GRAFANA_URL": "", "OB_GRAFANA_HOST": "Machine.Example.com"},
+                          {"OB_RUSTFS_URL": "", "OB_RUSTFS_HOST": "Machine.Example.com"}):
+            with self.assertRaises(bootstrap.Refused) as refused:
+                bootstrap.access_config(settings | {"OB_PUBLIC_DOMAIN": "observe.example.com"} | overrides)
+            self.assertEqual(refused.exception.code, "rustfs_origin_conflict")
+        with self.assertRaises(bootstrap.Refused) as refused:
+            bootstrap.access_config(settings | {"OB_PUBLIC_PORT_SUFFIX": ":443",
+                                                "OB_RUSTFS_URL": "https://machine.example.com:443"})
+        self.assertEqual(refused.exception.code, "rustfs_origin_conflict")
+        with self.assertRaises(bootstrap.Refused) as refused:
+            bootstrap.access_config(settings | {"OB_TRUSTED_PROXIES": "100.64.0.0/10"})
+        self.assertEqual(refused.exception.code, "proxy_trust_invalid")
+        bootstrap.access_config(settings | {"OB_TRUSTED_PROXIES": "100.100.1.2/32 fd7a:115c:a1e0::1/128"})
+        canonical = settings | {"OB_RUSTFS_URL": "https://[::1]:443"}
+        bootstrap.access_config(canonical)
+        self.assertEqual(canonical["OB_RUSTFS_AUTHORITY"], "[::1]")
+
+    def test_rustfs_console_preserves_existing_s3_origins_and_secret_custody(self):
+        shutil.copy(self.template.parent / "compose.yaml", self.root / "compose.yaml")
+        self.env.write_text("COMPOSE_PROFILES=s3\nOB_ACCESS_MODE=proxy\n"
+                            "OB_TRUSTED_PROXIES=192.0.2.2/32\n"
+                            "OB_GRAFANA_URL=https://machine.example.com:8447\n"
+                            "OB_RUSTFS_URL=https://machine.example.com:8451\n"
+                            "OB_RUSTFS_IMAGE=local-experiment:dev\n")
+        self.render()
+        _, secrets_before = bootstrap.read_env(self.env)
+        marker = self.root / "data/installation/storage-mode"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("s3\n")
+        self.env.write_text(self.env.read_text().replace("OB_RUSTFS_CONSOLE=false", "OB_RUSTFS_CONSOLE=true"))
+        with patch.object(bootstrap, "__file__", str(self.root / "scripts/bootstrap.py")), \
+             patch.object(bootstrap, "wait_ready"):
+            self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner_with()), 0)
+        _, secrets_after = bootstrap.read_env(self.env)
+        self.assertEqual(secrets_before, secrets_after)
+        self.assertEqual(self.env.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(marker.read_text(), "s3\n")
+        self.assertIn("OB_RUSTFS_IMAGE=local-experiment:dev\n", self.env.read_text())
+        links = (self.root / "data/console/links.json").read_text()
+        self.assertEqual(json.loads(links), {"grafana": "https://machine.example.com:8447",
+                                           "rustfs": "https://machine.example.com:8451"})
+        for value in secrets_before.values():
+            self.assertNotIn(value, links)
 
     def test_proxy_records_override_and_starts_with_it_in_both_storage_modes(self):
         for profile in ("", "s3"):

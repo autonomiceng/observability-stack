@@ -6,6 +6,7 @@ Caddy is the only published entry.
 | --- | --- |
 | `<domain>` | Stack Console and exact `/health/*` probes |
 | `OB_GRAFANA_HOST` (default `grafana.<domain>`) | Grafana |
+| `OB_RUSTFS_HOST` (default `rustfs.<domain>`) | Opt-in native RustFS console and APIs, operator clients only |
 
 `OB_GRAFANA_URL` optionally sets Grafana's full browser origin, including its port.
 Leave it empty to keep the mode, hostname and port suffix defaults. It accepts an
@@ -138,6 +139,70 @@ Use the ports actually configured at Edge. Leave these values empty for a standa
 installation. The Stack Console reads configured application links from `/links.json`,
 including for callers who receive status-only `/versions.json` responses.
 
+## Optional RustFS human console
+
+On an existing S3 installation, set `OB_RUSTFS_CONSOLE=true` and run bootstrap again.
+The default is `false`, passed directly to RustFS's native `RUSTFS_CONSOLE_ENABLE`.
+Bootstrap refuses enablement without the existing `s3` profile; it never selects S3
+or migrates storage for the console. Keep existing secrets, volumes, state and Compose
+profiles. A filesystem installation needs an explicit storage migration before this
+feature can be used. The shipped RustFS pin and `OB_RUSTFS_IMAGE` override are unchanged.
+Toggling the flag recreates RustFS and Caddy and can briefly fail S3 writes; schedule the
+interruption and take a [Checkpoint](backup.md) before changing the setting.
+
+Standalone ingress uses `rustfs.<domain>` (`rustfs.localhost` for an IP root), with an
+optional `OB_RUSTFS_HOST` override. Its links follow the existing scheme and port suffix.
+Local Mode supports HTTP and internal-CA HTTPS; Public Mode requires DNS for this extra
+hostname and issues its certificate only when enabled. Disabling hides the console card and
+returns 404 through HTTP/proxy ingress; standalone RustFS HTTPS is provisioned only while
+enabled. No additional listener or published port is needed.
+
+For private Tailscale access through Platform Edge, keep the existing Grafana and root
+origins and configure:
+
+```sh
+OB_RUSTFS_CONSOLE=true
+OB_RUSTFS_HOST=rustfs.localhost
+OB_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8451
+```
+
+Use the proxy settings above. `OB_RUSTFS_URL` follows the same strict origin rules as
+`OB_GRAFANA_URL`; bootstrap saves `OB_RUSTFS_URL_HOST` and `OB_RUSTFS_AUTHORITY` as derived
+values. Grafana on `:8447`, the Stack Console on `:8446`, and RustFS on `:8451` can share
+one hostname. Authorities must be distinct. Internal application hostnames stay separate
+from the shared external hostname; bootstrap rejects cross-application hostname reuse,
+even when the console is disabled. The URL configures routing and links; Edge owns the
+external listener and certificate.
+
+Platform Edge's follow-up reserves private HTTPS port 8451 and forwards its **whole
+origin** to `ob-gateway:80`, retaining `Host: darkforge.tail694fe2.ts.net:8451` and supplying
+`X-Forwarded-Proto: https`. Edge must correctly overwrite or append the connecting client
+address. Caddy forwards all paths unchanged to `rustfs:9001`, including
+`/rustfs/console/`, its assets, `/rustfs/admin/v3/*`, STS and S3 requests. Rewriting Host,
+dropping the port, stripping a prefix or routing only the UI breaks same-origin requests
+and SigV4. Only GET/HEAD `/` requests accepting HTML redirect to `/rustfs/console/`.
+
+The whole origin requires `OB_OPERATOR_ALLOW`. Set it to the actual operator Tailnet
+client IPs (including IPv6 when used), separately from `OB_TRUSTED_PROXIES`, which must
+contain only Edge's exact connection peer IPs. If Tailscale termination presents its own
+peer identity instead of an original client, verify that identity and enforce client
+restrictions at that edge before allowing the peer. Never trust the whole Tailnet or a
+Docker subnet as forwarding proxies. Untrusted forwarding headers cannot grant access.
+RustFS still stays off the Platform Network; Caddy is its only ingress.
+
+Humans log in using the existing privileged RustFS root credentials: `OB_S3_ACCESS_KEY`
+and `OB_S3_SECRET_KEY` in the private `.env`. These are administrative credentials, not an
+agent's scoped S3 key. Native RustFS authentication remains required for admin and object
+operations. The Stack Console publishes only the configured link. Agents use the Files
+API in their owning stack; this console adds no agent credential distribution.
+
+The S3 smoke fixture enables the console and checks HTML-only landing redirects, all
+referenced JS/CSS assets, unsigned admin denial, forwarding spoof isolation and full
+external port routing. The filesystem fixture checks disabled-origin 404s. Before operator
+rollout, also verify native browser login and a signed `/rustfs/admin/v3/accountinfo`
+request through Edge on port 8451, including trusted client allow/deny cases. The expected
+signed response is 200; the unsigned response is 403 after the operator IP gate.
+
 ## Shared host
 
 Bootstrap creates the external network `platform`. Caddy is `ob-gateway`, Grafana is
@@ -151,7 +216,8 @@ it defaults to `localhost`. Its internal HTTP health endpoint must be reachable 
 `lg-gateway:80/health/litellm`. An HTTPS-only sibling ingress requires matching internal
 routing at the shared edge; this probe does not bypass TLS or guess its configuration.
 
-Loki, Mimir, Tempo, RustFS and Alloy have no published ports or public Caddy API routes.
+Loki, Mimir, Tempo, RustFS and Alloy have no published ports. Loki, Mimir, Tempo and Alloy
+have no public Caddy API routes; RustFS has only the opt-in operator console origin above.
 Grafana authenticates its datasource proxy. Caddy blocks Grafana's `/metrics` path. The
 platform network is trusted: Grafana and Alloy's internal endpoints can be reached by its
 members. Alloy joins as `ob-alloy`. Its OTLP receivers bind only to `ob-alloy-otlp` on

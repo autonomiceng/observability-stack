@@ -67,7 +67,17 @@ The override selects the three S3 configs. A one-shot `rustfs-init` reuses RustF
 SigV4-capable curl to create separate buckets. WALs, compaction state and caches remain local.
 The storage-mode marker refuses silent switches. This is a fresh-install option; copying
 filesystem data to S3 requires an explicit migration. Checkpoints archive local volumes
-and RustFS together in S3 mode. The restore drill has explicit filesystem and S3 modes with historical telemetry and Grafana state checks.
+and RustFS together in S3 mode. The restore drill has explicit filesystem and S3 modes
+with historical telemetry and Grafana state checks.
+
+On an existing S3 installation, `OB_RUSTFS_CONSOLE=true` enables RustFS's native human
+console. Caddy forwards its entire operator-allowlisted origin to private port 9001,
+including assets, STS, S3 and admin APIs, preserving Host, scheme and the full external
+port. `OB_RUSTFS_URL` supports a separate port on the same Tailscale hostname as Grafana;
+standalone access uses `rustfs.<domain>`. Native root-user authentication is required.
+The feature defaults off, refuses filesystem storage, adds no network membership or
+published port, and leaves storage selection and image overrides unchanged. Agents use
+their owning stack's Files API. See `operations/ingress.md`.
 
 Grafana provisions three fixed datasource UIDs (`loki`, `mimir`, `tempo`), the `Stacks` folder,
 one dashboard and thirteen alerts. Anonymous access and user signup are disabled. The admin

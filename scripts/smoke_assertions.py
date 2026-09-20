@@ -4,6 +4,7 @@
 import base64
 import http.client
 import json
+import re
 import secrets
 import ssl
 import subprocess
@@ -60,13 +61,16 @@ def check(env_file: Path, origin: str, project: str) -> None:
     lines, _ = read_env(env_file)
     settings = {match['key']: bootstrap.unquote(match['value']) for match in map(bootstrap.ENV_LINE.match, lines) if match}
     check_access(env_file, settings)
+    check_rustfs_console(settings)
     from smoke_status import check as check_status
     check_status(env_file, settings)
 
     for service in ('grafana', 'loki', 'tempo', 'mimir', 'alloy'):
         get(base + '/health/' + service)
     print('ok: all five HTTP readiness endpoints', flush=True)
-    assert 'Observability Stack' in get(base + '/')
+    page = get(base + '/')
+    assert 'Observability Stack' in page
+    assert re.search(r'<li data-optional-link="rustfs"[^>]*\shidden', page), 'optional console card must default hidden'
     assert 'grafana' in json.loads(get(base + '/versions.json'))['images']
     print('ok: console and versions', flush=True)
 
@@ -143,10 +147,63 @@ def check_proxy_access(env_file, settings):
         assert request(other, '/health/grafana')[0] == 200, other
         status, body = request(other, '/links.json')
         assert status == 200
-        assert json.loads(body) == {'grafana': settings['OB_GRAFANA_URL'],
-                                    'gateway': settings['OB_GATEWAY_URL'],
-                                    'backplane': settings['OB_BACKPLANE_URL']}
+        expected_links = {'grafana': settings['OB_GRAFANA_URL'],
+                          'gateway': settings['OB_GATEWAY_URL'], 'backplane': settings['OB_BACKPLANE_URL']}
+        if settings['OB_RUSTFS_CONSOLE'] == 'true':
+            expected_links['rustfs'] = bootstrap.rustfs_origin(settings)
+        assert json.loads(body) == expected_links
     print('ok: exact external authority, internal Grafana, same-host sibling ports, root health, links, auth and metrics denial', flush=True)
+
+
+def check_rustfs_console(settings):
+    origin = bootstrap.rustfs_origin(settings)
+    authority = urllib.parse.urlsplit(origin).netloc
+
+    def request(path, method='GET', headers=None, host=authority):
+        connection = http.client.HTTPConnection('127.0.0.1', int(settings['OB_HTTP_PORT']), timeout=10)
+        try:
+            connection.request(method, path, headers={'Host': host} | (headers or {}))
+            response = connection.getresponse()
+            return response.status, response.getheader('Location'), response.read()
+        finally:
+            connection.close()
+
+    if settings['OB_ACCESS_MODE'] == 'proxy' and settings.get('OB_RUSTFS_AUTHORITY'):
+        parsed = urllib.parse.urlsplit(origin)
+        host = '[' + parsed.hostname + ']' if ':' in parsed.hostname else parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+        wrong_authority = f'{host}:{port + 1 if port < 65535 else port - 1}'
+        status, location, body = request('/', host=wrong_authority)
+        assert status == 200 and location is None and b'Observability Stack' in body, wrong_authority
+        assert request('/rustfs/admin/v3/accountinfo', host=wrong_authority)[0] == 404
+        assert request('/rustfs/console/', host=wrong_authority,
+                       headers={'X-Forwarded-Host': authority})[0] == 404
+
+    if settings['OB_RUSTFS_CONSOLE'] != 'true':
+        for path in ('/', '/rustfs/console/', '/rustfs/admin/v3/accountinfo', '/?Action=AssumeRole'):
+            assert request(path)[0] == 404, path
+        print('ok: disabled RustFS origin returns 404', flush=True)
+        return
+    for method in ('GET', 'HEAD'):
+        status, location, _ = request('/', method, {'Accept': 'text/html'})
+        assert (status, location) == (302, '/rustfs/console/')
+    for method, headers in (('GET', {}), ('POST', {'Accept': 'text/html'})):
+        status, location, _ = request('/', method, headers)
+        assert status >= 400 and location is None, (method, status)
+    status, _, html = request('/rustfs/console/')
+    assert status == 200 and b'<html' in html.lower()
+    assets = set(re.findall(r"[\"']([^\"'<>\s]+\.(?:js|css)(?:\?[^\"'<>\s]*)?)[\"']", html.decode()))
+    assert assets, 'console must reference assets'
+    for asset in assets:
+        url = urllib.parse.urlsplit(urllib.parse.urljoin(origin + '/rustfs/console/', asset))
+        assert url.netloc == authority, 'console asset must retain its origin'
+        status, location, body = request(url.path + ('?' + url.query if url.query else ''))
+        assert status == 200 and location is None and body and b'<html' not in body[:100].lower(), url.path
+    assert request('/rustfs/admin/v3/accountinfo')[0] == 403
+    # A direct, untrusted caller cannot replace its allowed peer identity or route via forwarding headers.
+    assert request('/rustfs/console/', headers={'X-Forwarded-For': '203.0.113.200',
+                   'X-Forwarded-Host': 'spoof.invalid:8451', 'X-Forwarded-Proto': 'https'})[0] == 200
+    print(f'ok: RustFS whole origin, {len(assets)} assets, HTML-only landing, unsigned admin denial and spoof isolation', flush=True)
 
 
 def check_access(env_file, settings):

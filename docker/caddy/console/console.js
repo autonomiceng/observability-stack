@@ -9,7 +9,12 @@
       const configured = await response.json();
       for (const link of document.querySelectorAll("[data-link]")) {
         const origin = configured[link.dataset.link];
-        if (/^https?:\/\//.test(origin)) link.href = origin + (link.dataset.path || "/");
+        if (/^https?:\/\//.test(origin)) {
+          link.href = origin + (link.dataset.path || "/");
+        }
+      }
+      for (const card of document.querySelectorAll("[data-optional-link]")) {
+        card.hidden = !/^https?:\/\//.test(configured[card.dataset.optionalLink]);
       }
       for (const link of document.querySelectorAll("[data-external]")) {
         const url = configured[link.dataset.external];
