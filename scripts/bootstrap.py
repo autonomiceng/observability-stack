@@ -320,7 +320,8 @@ def access_config(settings: dict[str, str]) -> None:
         ip_root = False
     settings["OB_GRAFANA_HOST"] = settings.get("OB_GRAFANA_HOST") or ("grafana.localhost" if ip_root else "grafana." + domain)
     for host in (domain, settings["OB_GRAFANA_HOST"]):
-        if not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?", host) or ".." in host:
+        if any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
+               for label in host.split(".")):
             raise Refused("access_host_invalid", "root and Grafana hosts must be explicit DNS names or an IPv4 root")
     if domain == settings["OB_GRAFANA_HOST"]:
         raise Refused("access_host_invalid", "Grafana requires a separate hostname")
@@ -482,8 +483,12 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             # record it instead of generating a different one.
             fresh.update({k: os.environ[k] for k in missing if os.environ.get(k)})
             write_env(env_file, lines, template, fresh)
-        saved_keys = ("OB_ACCESS_MODE", "OB_SCHEME", "OB_GRAFANA_HOST", "OB_GRAFANA_URL",
-                      "OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY", "COMPOSE_FILE", "COMPOSE_PROFILES")
+        saved_keys = (
+            "OB_ACCESS_MODE", "OB_PUBLIC_DOMAIN", "OB_GRAFANA_HOST", "OB_SCHEME",
+            "OB_BIND_HOST", "OB_HTTP_PORT", "OB_HTTPS_PORT", "OB_PUBLIC_PORT_SUFFIX",
+            "OB_TRUSTED_PROXIES", "OB_OPERATOR_ALLOW", "OB_GRAFANA_URL",
+            "OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY", "COMPOSE_FILE", "COMPOSE_PROFILES",
+        )
         lines = env_file.read_text().splitlines()
         for key in saved_keys:
             found = False
@@ -535,6 +540,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         origin = domain + settings.get("OB_PUBLIC_PORT_SUFFIX", "")
         for service in ("grafana", "loki", "tempo", "mimir", "alloy"):
             wait_ready(f"{local_origin(settings)}/health/{service}", host=domain)
+        if settings["OB_ACCESS_MODE"] == "public":
+            wait_ready(f"{local_origin(settings)}/login", host=settings["OB_GRAFANA_HOST"])
         if settings["OB_ACCESS_MODE"] == "local":
             certificate = runner(["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
                                   "exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt"])
