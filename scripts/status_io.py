@@ -1,4 +1,8 @@
-"""Bounded private reads and atomic publication for the host status observer."""
+"""Bounded private reads and atomic publication for the host status observer.
+
+Filesystem helpers may raise raw ``OSError``; callers at the observation boundary catch
+both it and ``Unavailable``. Process failures are classified for public probe semantics.
+"""
 
 import json
 import math
@@ -52,7 +56,7 @@ def run(argv, *, timeout=4, limit=65536, cwd=None, env=None):
                             if key.fileobj is process.stdout:
                                 output.extend(chunk)
                 code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
-                if code in (126, 127):
+                if code in (125, 126, 127):
                     raise Unsupported()
                 if code:
                     raise Unavailable()
@@ -61,7 +65,9 @@ def run(argv, *, timeout=4, limit=65536, cwd=None, env=None):
                 if process.poll() is None:
                     process.kill()  # Only the child captured at spawn.
                 process.wait()
-    except (OSError, UnicodeError, subprocess.SubprocessError) as error:
+    except (OSError, UnicodeError) as error:
+        raise Unsupported() from error
+    except subprocess.SubprocessError as error:
         raise Unavailable() from error
 
 
@@ -109,8 +115,6 @@ def directory(path, mode=0o755, *, create=True):
         info = os.fstat(fd)
         if info.st_uid != os.getuid() or info.st_mode & 0o022:
             raise Unavailable()
-        if mode == 0o700 and create:
-            os.fchmod(fd, mode)
         yield fd
     finally:
         os.close(fd)
@@ -125,12 +129,20 @@ def regular(fd, name):
         raise Unavailable()
 
 
-def publish(fd, name, document, mode=0o644):
+def publish(fd, name, document, mode=0o644, *, serialized=False):
     payload = (json.dumps(document, separators=(',', ':'), allow_nan=False) + '\n').encode()
     if len(payload) > 65536:
         raise Unavailable()
     regular(fd, name)
-    temporary = '.status-' + uuid.uuid4().hex
+    if serialized:
+        # The caller's destination lock makes fixed-name corpse reclamation safe.
+        temporary = f'.{name}.tmp'
+        try:
+            os.unlink(temporary, dir_fd=fd)
+        except FileNotFoundError:
+            pass
+    else:
+        temporary = '.status-' + uuid.uuid4().hex
     handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      mode, dir_fd=fd)
     try:

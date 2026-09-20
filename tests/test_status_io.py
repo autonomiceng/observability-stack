@@ -45,6 +45,15 @@ class StatusIOTests(unittest.TestCase):
                 io.publish(fd, 'status.json', {'huge': 'x' * 65536})
             self.assertEqual(json.loads((self.root / 'status.json').read_text()), {'old': True})
 
+    def test_publication_reclaims_fixed_temporary_file(self):
+        with io.directory(self.root / 'console') as fd:
+            temporary = self.root / 'console/.status.json.tmp'
+            temporary.write_text('partial')
+            io.publish(fd, 'status.json', {'complete': True}, serialized=True)
+        self.assertFalse(temporary.exists())
+        self.assertEqual(json.loads((self.root / 'console/status.json').read_text()),
+                         {'complete': True})
+
     def test_symlink_directory_destination_and_hardlink_refused(self):
         (self.root / 'real').mkdir(mode=0o755)
         (self.root / 'link').symlink_to(self.root / 'real')
@@ -73,6 +82,14 @@ class StatusIOTests(unittest.TestCase):
         with self.assertRaises(io.Unavailable):
             io.read_task(self.root, self.root, self.root / '.env')
 
+    def test_existing_private_directory_mode_is_preserved(self):
+        private = self.root / 'status'
+        private.mkdir(mode=0o750)
+        io.task_record(self.root, self.root, self.root / '.env',
+                       '2026-09-20T12:00:00Z', 'healthy')
+        self.assertEqual(private.stat().st_mode & 0o777, 0o750)
+        self.assertEqual((private / 'bootstrap.json').stat().st_mode & 0o777, 0o600)
+
     def test_process_deadline_includes_silent_child(self):
         start = time.monotonic()
         with self.assertRaises(io.Unavailable):
@@ -85,6 +102,18 @@ class StatusIOTests(unittest.TestCase):
                 io.run([sys.executable, '-c', code], limit=100)
             self.assertNotIn('SECRET', str(caught.exception))
         self.assertEqual(io.run([sys.executable, '-c', 'print("ok")']), 'ok\n')
+
+    def test_process_exit_and_spawn_failures_are_classified(self):
+        for code in (125, 126, 127):
+            with self.subTest(code=code), self.assertRaises(io.Unsupported):
+                io.run([sys.executable, '-c', f'raise SystemExit({code})'])
+        with self.assertRaises(io.Unavailable) as caught:
+            io.run([sys.executable, '-c', 'raise SystemExit(1)'])
+        self.assertNotIsInstance(caught.exception, io.Unsupported)
+        with self.assertRaises(io.Unsupported):
+            io.run([str(self.root / 'missing-binary')])
+        with self.assertRaises(io.Unsupported):
+            io.run([sys.executable, '-c', 'import sys; sys.stdout.buffer.write(bytes([255]))'])
 
     def test_private_json_rejects_duplicate_nonfinite_and_oversize(self):
         for text in ('{"a":1,"a":2}', '{"a":NaN}', '{"a":Infinity}', '1e999', '-1e999', 'x' * 65537):

@@ -75,6 +75,10 @@ class ProbeTests(unittest.TestCase):
                     self.assertIsNone(probes.version(service, tag))
         self.assertEqual(probes.configured_image('caddy', 'local:2.11.4@sha256:' + 'a' * 64),
                          {'configuredVersion': '2.11.4', 'configuredDigest': 'sha256:' + 'a' * 64})
+        self.assertEqual(probes.configured_image('caddy', 'local:2.11.4-alpine'),
+                         {'configuredVersion': '2.11.4'})
+        self.assertEqual(probes.configured_image('grafana', 'local:12.1.0-ubuntu'),
+                         {'configuredVersion': '12.1.0'})
 
     def test_probe_has_no_address_no_runtime_claim(self):
         self.assertEqual(probes.probe('rustfs', 'container', None, 'observe.example'), ('unknown', None))
