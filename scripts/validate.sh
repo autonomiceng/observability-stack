@@ -132,7 +132,7 @@ for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'pr
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \
     -e "OB_ACCESS_MODE=$1" -e "OB_PUBLIC_DOMAIN=$2" -e OB_GRAFANA_HOST=grafana.example.com \
     -e OB_TRUSTED_PROXIES=192.0.2.2/32 -e OB_RUSTFS_HOST=rustfs.example.com \
-    -e "OB_OPERATOR_ALLOW=100.100.1.2/32 fd7a:115c:a1e0::1/128" \
+    -e "OB_OPERATOR_ALLOW=100.100.1.2/32 fd7a:115c:a1e0::1/128" -e "OB_RUSTFS_CONSOLE_ALLOW=100.100.1.2/32 fd7a:115c:a1e0::1/128" \
     -e "OB_RUSTFS_CONSOLE=$enabled" -e "OB_RUSTFS_URL_HOST=$url_host" -e "OB_RUSTFS_AUTHORITY=$rustfs_authority" \
     -e "OB_GRAFANA_URL_HOST=$url_host" -e "OB_GRAFANA_AUTHORITY=$authority" \
     -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" "$caddy_image" \

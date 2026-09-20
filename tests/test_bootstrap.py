@@ -636,3 +636,17 @@ class BootstrapTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ConsoleAccessTests(unittest.TestCase):
+    def test_console_allowlist_is_independent_of_monitoring_operators(self):
+        settings = {'COMPOSE_PROFILES': 's3', 'OB_RUSTFS_CONSOLE': 'true',
+                    'OB_OPERATOR_ALLOW': '192.0.2.7/32', 'OB_RUSTFS_CONSOLE_ALLOW': '100.64.0.9/32'}
+        bootstrap.access_config(settings)
+        self.assertEqual(settings['OB_OPERATOR_ALLOW'], '192.0.2.7/32')
+        self.assertEqual(settings['OB_RUSTFS_CONSOLE_ALLOW'], '100.64.0.9/32')
+        default = {'OB_OPERATOR_ALLOW': '192.0.2.7/32'}
+        bootstrap.access_config(default)
+        self.assertEqual(default['OB_RUSTFS_CONSOLE_ALLOW'], '127.0.0.1/8 ::1')
+        for value in ('', 'private_ranges', 'example.com', '127.0.0.1 {', '192.0.2.1/33'):
+            with self.assertRaises(bootstrap.Refused):
+                bootstrap.access_config(settings | {'OB_RUSTFS_CONSOLE_ALLOW': value})

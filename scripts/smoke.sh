@@ -89,6 +89,7 @@ sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
     -e "s#^OB_PLATFORM_NETWORK=.*#OB_PLATFORM_NETWORK=$network#" \
     -e "s#^OB_VOLUME_PREFIX=.*#OB_VOLUME_PREFIX=$COMPOSE_PROJECT_NAME#" \
     -e "s#^OB_ALERTS=.*#OB_ALERTS=placeholder#" \
+    -e "s#^OB_RUSTFS_CONSOLE_ALLOW=.*#OB_RUSTFS_CONSOLE_ALLOW=0.0.0.0/0 ::/0#" \
     -e "s#^OB_OPERATOR_ALLOW=.*#OB_OPERATOR_ALLOW=private_ranges#" \
     -e "s#^OB_STATE_DIR=.*#OB_STATE_DIR=$work/data#" \
     -e "s#^OB_BACKUP_DIR=.*#OB_BACKUP_DIR=$work/backups#" \

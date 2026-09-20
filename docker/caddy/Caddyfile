@@ -51,7 +51,7 @@
 (rustfs-access) {
 	@disabled expression `'{$OB_RUSTFS_CONSOLE:false}' != 'true'`
 	respond @disabled "" 404
-	@denied not client_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
+	@denied not client_ip {$OB_RUSTFS_CONSOLE_ALLOW:127.0.0.1/8 ::1}
 	respond @denied "" 404
 }
 
