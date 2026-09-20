@@ -164,14 +164,15 @@ class BootstrapTests(unittest.TestCase):
         up = next(call for call in run.calls if call[:2] == ['docker', 'compose'])
         self.assertIn(str(self.root / 'compose.s3.yaml'), up)
         self.assertEqual([call.args[0] for call in ready.call_args_list],
-                         ['http://127.0.0.1:80/health/' + name for name in ('grafana','loki','tempo','mimir','alloy')])
+                         [origin + '/health/' + name for origin in ('http://127.0.0.1:80', 'https://127.0.0.1:443')
+                          for name in ('grafana','loki','tempo','mimir','alloy')])
 
     def test_readiness_origin_uses_the_local_https_listener(self):
         self.render()
         text = self.env.read_text()
         text = text.replace("OB_PUBLIC_DOMAIN=localhost\n", "OB_PUBLIC_DOMAIN=observe.example.com\n")
         text = text.replace("OB_SCHEME=http\n", "OB_SCHEME=https\n")
-        text = text.replace("OB_HTTPS_PORT=443\n", "OB_HTTPS_PORT=80\n")
+        text = text.replace("OB_HTTPS_PORT=443\n", "OB_HTTPS_PORT=18443\n")
         text = text.replace("OB_PUBLIC_PORT_SUFFIX=\n", "OB_PUBLIC_PORT_SUFFIX=:9443\n")
         self.env.write_text(text)
         source = Path(bootstrap.__file__).resolve().parent.parent
@@ -180,8 +181,10 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner_with()), 0)
         self.assertEqual(
             [call.args[0] for call in ready.call_args_list],
-            ["https://127.0.0.1:80/health/" + name for name in ("grafana", "loki", "tempo", "mimir", "alloy")],
+            [origin + "/health/" + name for origin in ("http://127.0.0.1:80", "https://127.0.0.1:18443")
+             for name in ("grafana", "loki", "tempo", "mimir", "alloy")],
         )
+        self.assertTrue(all("ca_data" in call.kwargs for call in ready.call_args_list[5:]))
 
     def test_bootstrap_refuses_a_storage_switch_before_compose(self):
         self.render()
@@ -203,7 +206,7 @@ class BootstrapTests(unittest.TestCase):
                                                ('http', '443', '80', ':443'),
                                                ('https', '443', '80', ':80')]:
             with self.subTest(scheme=scheme, http=http):
-                self.env.write_text(f'OB_SCHEME={scheme}\nOB_HTTP_PORT={http}\nOB_HTTPS_PORT={https}\n')
+                self.env.write_text(f'OB_ACCESS_MODE=local\nOB_SCHEME={scheme}\nOB_HTTP_PORT={http}\nOB_HTTPS_PORT={https}\n')
                 self.render()
                 self.assertIn(f'OB_PUBLIC_PORT_SUFFIX={expected}\n', self.env.read_text())
                 before = self.env.read_text()
@@ -223,7 +226,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(self.env.read_text(), before)
 
     def test_local_listener_probe_sends_public_host(self):
-        settings = {'OB_SCHEME': 'https', 'OB_LISTEN_SCHEME': 'http',
+        settings = {'OB_SCHEME': 'https', 'OB_ACCESS_MODE': 'proxy',
                     'OB_HTTP_PORT': '18080', 'OB_PUBLIC_DOMAIN': 'observe.example.com'}
         with patch.object(bootstrap.urllib.request, 'urlopen') as opened:
             opened.return_value.__enter__.return_value.status = 200
@@ -232,7 +235,7 @@ class BootstrapTests(unittest.TestCase):
         request = opened.call_args.args[0]
         self.assertEqual(request.full_url, 'http://127.0.0.1:18080/health/grafana')
         self.assertEqual(request.get_header('Host'), 'observe.example.com')
-        settings['OB_LISTEN_SCHEME'] = 'https'
+        settings['OB_ACCESS_MODE'] = 'public'
         settings['OB_HTTPS_PORT'] = '18443'
         with patch.object(bootstrap, 'LocalHTTPSConnection') as connection:
             connection.return_value.getresponse.return_value.status = 200
@@ -244,9 +247,55 @@ class BootstrapTests(unittest.TestCase):
 
 
     def test_suffix_not_derived_behind_edge(self):
-        self.env.write_text('OB_SCHEME=https\nOB_LISTEN_SCHEME=http\nOB_HTTP_PORT=18180\nOB_HTTPS_PORT=18543\n')
+        self.env.write_text('OB_ACCESS_MODE=proxy\nOB_TRUSTED_PROXIES=192.0.2.2\nOB_SCHEME=https\nOB_HTTP_PORT=18180\nOB_HTTPS_PORT=18543\n')
         self.render()
         self.assertNotIn('OB_PUBLIC_PORT_SUFFIX=:', self.env.read_text())
+
+    def test_access_defaults_and_invalid_configuration(self):
+        for mode, expected in [("local", "http"), ("public", "https"), ("proxy", "https")]:
+            settings = {"OB_ACCESS_MODE": mode, "OB_PUBLIC_DOMAIN": "observe.example.com",
+                        "OB_TRUSTED_PROXIES": "192.0.2.2/32"}
+            bootstrap.access_config(settings)
+            self.assertEqual(settings["OB_SCHEME"], expected)
+        settings = {}
+        bootstrap.access_config(settings)
+        self.assertEqual(settings["OB_ACCESS_MODE"], "local")
+        for invalid in ({"OB_ACCESS_MODE": "unknown"}, {"OB_SCHEME": "ftp"},
+                        {"OB_ACCESS_MODE": "public", "OB_SCHEME": "http"},
+                        {"OB_ACCESS_MODE": "proxy"}, {"OB_TRUSTED_PROXIES": "172.16.0.0/12"},
+                        {"OB_PUBLIC_DOMAIN": "localhost {"}, {"OB_PUBLIC_PORT_SUFFIX": ":70000"}):
+            with self.subTest(invalid=invalid), self.assertRaises(bootstrap.Refused):
+                bootstrap.access_config(invalid.copy())
+
+    def test_ip_root_keeps_a_configured_grafana_origin(self):
+        settings = {"OB_PUBLIC_DOMAIN": "127.0.0.1", "OB_STATE_DIR": str(self.root),
+                    "OB_PUBLIC_PORT_SUFFIX": ":18080"}
+        bootstrap.access_config(settings)
+        self.assertEqual(settings["OB_GRAFANA_HOST"], "grafana.localhost")
+        bootstrap.write_versions(self.root, self.template.parent / "compose.yaml", settings)
+        self.assertEqual(json.loads((self.root / "console/links.json").read_text()),
+                         {"grafana": "http://grafana.localhost:18080"})
+        settings["OB_ACCESS_MODE"] = "public"
+        settings["OB_SCHEME"] = "https"
+        with self.assertRaises(bootstrap.Refused):
+            bootstrap.access_config(settings)
+
+    def test_local_https_readiness_verifies_with_own_public_ca(self):
+        with patch.object(bootstrap.ssl, "create_default_context") as context, patch.object(bootstrap, "LocalHTTPSConnection") as connection:
+            connection.return_value.getresponse.return_value.status = 200
+            bootstrap.wait_ready("https://127.0.0.1:18443/health/grafana", host="localhost", ca_data="public-root")
+        context.assert_called_once_with(cadata="public-root")
+        connection.assert_called_once_with("localhost", port=18443, timeout=5, context=context.return_value)
+
+    def test_proxy_records_override_and_starts_with_it_in_both_storage_modes(self):
+        for profile in ("", "s3"):
+            self.env.write_text("OB_ACCESS_MODE=proxy\nOB_SCHEME=https\nOB_TRUSTED_PROXIES=192.0.2.2\nCOMPOSE_PROFILES=" + profile + "\n")
+            self.render()
+            expected = "compose.yaml:" + ("compose.s3.yaml:" if profile else "") + "compose.proxy.yaml"
+            self.assertIn("COMPOSE_FILE=" + expected + "\n", self.env.read_text())
+            run = runner_with()
+            bootstrap.compose_up(self.root, self.env, run, bool(profile), True)
+            self.assertIn(str(self.root / "compose.proxy.yaml"), run.calls[-1])
 
 
 if __name__ == "__main__":

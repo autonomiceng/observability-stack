@@ -20,7 +20,7 @@ def prepare_checkout(source, target):
     target.mkdir()
     for name in ('scripts', 'docker'):
         shutil.copytree(source / name, target / name, ignore=shutil.ignore_patterns('__pycache__'))
-    for name in ('compose.yaml', 'compose.s3.yaml', '.env.example', 'config.alloy'):
+    for name in ('compose.yaml', 'compose.s3.yaml', 'compose.proxy.yaml', '.env.example', 'config.alloy'):
         shutil.copy2(source / name, target / name)
     config = (target / 'config.alloy').read_text()
     start = config.index('discovery.docker "host"')

@@ -2,10 +2,9 @@
 name: observability-stack
 
 x-logging: &logging
-  driver: json-file
+  driver: journald
   options:
-    max-size: "10m"
-    max-file: "3"
+    cache-disabled: "true"
 
 services:
   caddy:
@@ -19,14 +18,12 @@ services:
       - "${OB_BIND_HOST:-127.0.0.1}:${OB_HTTP_PORT:-80}:80"
       - "${OB_BIND_HOST:-127.0.0.1}:${OB_HTTPS_PORT:-443}:443"
     environment:
-      OB_SCHEME: ${OB_SCHEME:-http}
-      # Scheme Caddy listens on. Behind platform-edge the public scheme is https
-      # while this Caddy listens on plain http; set OB_LISTEN_SCHEME=http there.
-      OB_LISTEN_SCHEME: ${OB_LISTEN_SCHEME:-${OB_SCHEME:-http}}
+      OB_ACCESS_MODE: ${OB_ACCESS_MODE:-local}
       OB_PUBLIC_DOMAIN: ${OB_PUBLIC_DOMAIN:-localhost}
+      OB_GRAFANA_HOST: ${OB_GRAFANA_HOST:-grafana.localhost}
+      OB_PUBLIC_PORT_SUFFIX: ${OB_PUBLIC_PORT_SUFFIX:-}
       OB_OPERATOR_ALLOW: ${OB_OPERATOR_ALLOW:-127.0.0.1/8 ::1}
       OB_TRUSTED_PROXIES: ${OB_TRUSTED_PROXIES:-}
-      OB_TLS_ISSUER: ${OB_TLS_ISSUER:-none}
       OB_GATEWAY_HEALTH_HOST: ${OB_GATEWAY_HEALTH_HOST:-localhost}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
@@ -74,7 +71,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${OB_GRAFANA_ADMIN_PASSWORD:?run scripts/bootstrap.py to generate secrets}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_SERVER_ROOT_URL: ${OB_SCHEME:-http}://grafana.${OB_PUBLIC_DOMAIN:-localhost}${OB_PUBLIC_PORT_SUFFIX:-}/
+      GF_SERVER_ROOT_URL: ${OB_SCHEME:-http}://${OB_GRAFANA_HOST:-grafana.localhost}${OB_PUBLIC_PORT_SUFFIX:-}/
+      GF_LOG_MODE: console
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
     volumes:
@@ -104,7 +102,8 @@ services:
     privileged: true
     command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy", "/etc/alloy/config.alloy"]
     environment:
-      OB_SCRAPE_GATEWAY: ${OB_SCRAPE_GATEWAY:-true}
+      OB_SCRAPE_EDGE: ${OB_SCRAPE_EDGE:-false}
+      OB_SCRAPE_GATEWAY: ${OB_SCRAPE_GATEWAY:-false}
       OB_BACKPLANE_OPERATIONS_TOKEN: ${OB_BACKPLANE_OPERATIONS_TOKEN:-}
     volumes:
       - ./config.alloy:/etc/alloy/config.alloy:ro
@@ -181,6 +180,8 @@ services:
       RUSTFS_SECRET_KEY: ${OB_S3_SECRET_KEY:?run scripts/bootstrap.py}
       RUSTFS_ADDRESS: ":9000"
       RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+      RUSTFS_OBS_LOG_STDOUT_ENABLED: "true"
     volumes:
       - rustfs-data:/data
     healthcheck:

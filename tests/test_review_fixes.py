@@ -53,7 +53,8 @@ class ReviewFixTests(unittest.TestCase):
                         return subprocess.CompletedProcess(argv, 1, b'', b'private diagnostics')
                     return subprocess.CompletedProcess(argv, 0, output, '')
                 eventually = Mock(side_effect=AssertionError('original ingestion failure')) if ingestion_fails else \
-                    Mock(return_value={'data': {'result': [{'value': [123, '42']}]}})
+                    Mock(side_effect=[{'data': {'result': [{'value': [123, '42']}]}},
+                                      {'data': {'result': [{'stream': {'service': 'caddy'}, 'values': [['123', 'marker']]}]}}])
                 expected = AssertionError if ingestion_fails else RuntimeError
                 with patch('subprocess.run', side_effect=run), \
                      patch.object(smoke_assertions, 'client', return_value=(None, None, eventually)), \

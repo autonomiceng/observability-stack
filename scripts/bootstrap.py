@@ -14,7 +14,9 @@ import argparse
 import fcntl
 import json
 import http.client
+import ipaddress
 import socket
+import ssl
 import os
 import re
 import secrets
@@ -163,6 +165,10 @@ def write_versions(root: Path, compose: Path, settings: dict[str, str] | None = 
         },
     }
     (console / "versions.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    settings = settings or {}
+    grafana_host = settings.get("OB_GRAFANA_HOST", "grafana.localhost")
+    origin = f'{settings.get("OB_SCHEME", "http")}://{grafana_host}{settings.get("OB_PUBLIC_PORT_SUFFIX", "")}'
+    (console / "links.json").write_text(json.dumps({"grafana": origin}) + "\n", encoding="utf-8")
 
 
 def ensure_network(runner: Runner, name: str = NETWORK) -> None:
@@ -242,17 +248,68 @@ def write_provisioning(root: Path, state: Path, settings: dict[str, str]) -> str
     return kind
 
 
-def local_origin(settings: dict[str, str]) -> str:
-    scheme = settings.get("OB_LISTEN_SCHEME") or settings.get("OB_SCHEME", "http")
+def local_origin(settings: dict[str, str], scheme: str | None = None) -> str:
+    scheme = scheme or ("https" if settings.get("OB_ACCESS_MODE") == "public" else "http")
     port = settings.get("OB_HTTPS_PORT" if scheme == "https" else "OB_HTTP_PORT") or ("443" if scheme == "https" else "80")
     return f"{scheme}://127.0.0.1:{port}"
 
 
-def compose_up(root: Path, env_file: Path, runner: Runner, s3: bool = False) -> None:
+def access_config(settings: dict[str, str]) -> None:
+    mode = settings.get("OB_ACCESS_MODE") or "local"
+    if mode not in ("local", "public", "proxy"):
+        raise Refused("access_mode_invalid", "OB_ACCESS_MODE must be local, public or proxy")
+    settings["OB_ACCESS_MODE"] = mode
+    settings["OB_SCHEME"] = settings.get("OB_SCHEME") or ("http" if mode == "local" else "https")
+    if (settings["OB_SCHEME"] not in ("http", "https") or
+            (mode == "public" and settings["OB_SCHEME"] != "https")):
+        raise Refused("access_mode_conflict", "OB_SCHEME must be http or https; public mode requires https")
+    domain = settings.get("OB_PUBLIC_DOMAIN") or "localhost"
+    settings["OB_PUBLIC_DOMAIN"] = domain
+    try:
+        ipaddress.ip_address(domain)
+        ip_root = True
+    except ValueError:
+        ip_root = False
+    settings["OB_GRAFANA_HOST"] = settings.get("OB_GRAFANA_HOST") or ("grafana.localhost" if ip_root else "grafana." + domain)
+    for host in (domain, settings["OB_GRAFANA_HOST"]):
+        if not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?", host) or ".." in host:
+            raise Refused("access_host_invalid", "root and Grafana hosts must be explicit DNS names or an IPv4 root")
+    if domain == settings["OB_GRAFANA_HOST"]:
+        raise Refused("access_host_invalid", "Grafana requires a separate hostname")
+    if mode == "public":
+        for host in (domain, settings["OB_GRAFANA_HOST"]):
+            try:
+                ipaddress.ip_address(host)
+                public_ip = True
+            except ValueError:
+                public_ip = False
+            if public_ip or "." not in host or host.endswith(".localhost"):
+                raise Refused("access_host_invalid", "public mode requires public DNS hostnames")
+    suffix = settings.get("OB_PUBLIC_PORT_SUFFIX", "")
+    if suffix and (not re.fullmatch(r":[0-9]+", suffix) or not 1 <= int(suffix[1:]) <= 65535):
+        raise Refused("access_port_invalid", "OB_PUBLIC_PORT_SUFFIX must be empty or :port")
+    for key in ("OB_HTTP_PORT", "OB_HTTPS_PORT"):
+        port = settings.get(key, "80" if key == "OB_HTTP_PORT" else "443")
+        if not port.isdigit() or not 1 <= int(port) <= 65535:
+            raise Refused("access_port_invalid", key + " must be a port number")
+    peers = settings.get("OB_TRUSTED_PROXIES", "").split()
+    if mode == "proxy" and not peers:
+        raise Refused("proxy_trust_required", "set OB_TRUSTED_PROXIES to exact Platform Edge peer IPs")
+    for peer in peers:
+        try:
+            network = ipaddress.ip_network(peer, strict=True)
+            if network.num_addresses != 1:
+                raise ValueError
+        except ValueError as error:
+            raise Refused("proxy_trust_invalid", "trust only exact proxy IPs or /32 and /128 host routes") from error
+
+
+def compose_up(root: Path, env_file: Path, runner: Runner, s3: bool = False, proxy: bool = False) -> None:
     result = runner([
         "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
         "-f", str(root / "compose.yaml"),
         *(["-f", str(root / "compose.s3.yaml"), "--profile", "s3"] if s3 else []),
+        *(["-f", str(root / "compose.proxy.yaml")] if proxy else []),
         "up", "--detach", "--wait", "--wait-timeout", "300",
     ])
     if result.returncode != 0:
@@ -270,7 +327,7 @@ class LocalHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
-def wait_ready(url: str, timeout: float = 120.0, host: str | None = None) -> None:
+def wait_ready(url: str, timeout: float = 120.0, host: str | None = None, ca_data: str | None = None) -> None:
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
@@ -278,7 +335,8 @@ def wait_ready(url: str, timeout: float = 120.0, host: str | None = None) -> Non
             request = urllib.request.Request(url, headers={"Host": host} if host else {})
             if host and url.startswith("https://127.0.0.1:"):
                 target = urllib.parse.urlsplit(url)
-                connection = LocalHTTPSConnection(host, port=target.port, timeout=5)
+                options = {"context": ssl.create_default_context(cadata=ca_data)} if ca_data else {}
+                connection = LocalHTTPSConnection(host, port=target.port, timeout=5, **options)
                 try:
                     connection.request("GET", target.path, headers={"Host": host})
                     status = connection.getresponse().status
@@ -337,12 +395,22 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         settings = defaults | settings
         settings.update({key: value for key, value in os.environ.items()
                          if key.startswith("OB_") or key in ("COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME")})
+        access_config(settings)
+        s3 = "s3" in settings.get("COMPOSE_PROFILES", "").split(",")
+        proxy = settings["OB_ACCESS_MODE"] == "proxy"
+        settings["COMPOSE_FILE"] = ":".join(["compose.yaml"] + (["compose.s3.yaml"] if s3 else []) + (["compose.proxy.yaml"] if proxy else []))
+        if os.environ.get("COMPOSE_FILE") and os.environ["COMPOSE_FILE"] != settings["COMPOSE_FILE"]:
+            raise Refused("compose_file_conflict", "unset COMPOSE_FILE; bootstrap selects the storage and access overrides")
         project = project_name(settings)
         prefix = settings.get("OB_VOLUME_PREFIX") or PROJECT
         state_dir = Path(settings.get("OB_STATE_DIR", "./data"))
         if not state_dir.is_absolute():
             state_dir = root / state_dir
         data_dir = state_dir / "installation"
+        mode = "s3" if s3 else "filesystem"
+        marker = data_dir / "storage-mode"
+        if not args.render_only and marker.exists() and marker.read_text().strip() != mode:
+            raise Refused("storage_migration_required", "storage mode differs from the installation; restore or migrate explicitly")
 
         # Scratch render-only stays offline. Installation bootstrap checks volumes
         # even when all secrets are present, before writing any installation state.
@@ -365,10 +433,25 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             # record it instead of generating a different one.
             fresh.update({k: os.environ[k] for k in missing if os.environ.get(k)})
             write_env(env_file, lines, template, fresh)
+        saved_keys = ("OB_ACCESS_MODE", "OB_SCHEME", "OB_GRAFANA_HOST", "COMPOSE_FILE", "COMPOSE_PROFILES")
+        lines = env_file.read_text().splitlines()
+        for key in saved_keys:
+            found = False
+            for index, line in enumerate(lines):
+                match = ENV_LINE.match(line)
+                if match and match.group("key") == key:
+                    if unquote(match.group("value")) != settings[key]:
+                        lines[index] = f"{key}={settings[key]}"
+                    found = True
+            if not found:
+                lines.append(f"{key}={settings[key]}")
+            if key in os.environ:
+                os.environ[key] = settings[key]
+        write_env(env_file, lines, template, {})
         scheme = settings.get("OB_SCHEME", "http")
         default_port = "443" if scheme == "https" else "80"
         port = settings.get("OB_HTTPS_PORT" if scheme == "https" else "OB_HTTP_PORT", default_port)
-        if (settings.get("OB_LISTEN_SCHEME") or scheme) == scheme and not settings.get("OB_PUBLIC_PORT_SUFFIX") and port != default_port:
+        if settings["OB_ACCESS_MODE"] != "proxy" and not settings.get("OB_PUBLIC_PORT_SUFFIX") and port != default_port:
             suffix = ":" + port
             lines = env_file.read_text().splitlines()
             lines = [line for line in lines if not (ENV_LINE.match(line) and ENV_LINE.match(line).group("key") == "OB_PUBLIC_PORT_SUFFIX")]
@@ -384,26 +467,6 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
 
         # Profiles cannot replace another service's config mount. Record the matching
         # override so later plain docker compose commands use the same storage mode.
-        profiles = settings.get("COMPOSE_PROFILES", "").split(",")
-        s3 = "s3" in profiles
-        mode = "s3" if s3 else "filesystem"
-        marker = data_dir / "storage-mode"
-        if marker.exists() and marker.read_text().strip() != mode:
-            raise Refused("storage_migration_required", "storage mode differs from the installation; restore or migrate explicitly")
-        settings["COMPOSE_FILE"] = "compose.yaml:compose.s3.yaml" if s3 else "compose.yaml"
-        # Preserve operator lines verbatim; only the selected Compose settings change.
-        lines = env_file.read_text().splitlines()
-        for key in ("COMPOSE_FILE", "COMPOSE_PROFILES"):
-            found = False
-            for index, line in enumerate(lines):
-                match = ENV_LINE.match(line)
-                if match and match.group("key") == key:
-                    if unquote(match.group("value")) != settings[key]:
-                        lines[index] = f"{key}={settings[key]}"
-                    found = True
-            if not found:
-                lines.append(f"{key}={settings[key]}")
-        write_env(env_file, lines, template, {})
         data_dir.mkdir(parents=True, exist_ok=True)
         marker.write_text(mode + "\n")
         (state_dir / "textfile").mkdir(parents=True, exist_ok=True)
@@ -416,17 +479,24 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
 
         ensure_network(runner, settings.get("OB_PLATFORM_NETWORK", NETWORK))
         ensure_volumes(runner, prefix, project, s3)
-        compose_up(root, env_file, runner, s3)
+        compose_up(root, env_file, runner, s3, proxy)
         scheme = settings.get("OB_SCHEME", "http")
         domain = settings.get("OB_PUBLIC_DOMAIN", "localhost")
         origin = domain + settings.get("OB_PUBLIC_PORT_SUFFIX", "")
         for service in ("grafana", "loki", "tempo", "mimir", "alloy"):
             wait_ready(f"{local_origin(settings)}/health/{service}", host=domain)
+        if settings["OB_ACCESS_MODE"] == "local":
+            certificate = runner(["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
+                                  "exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt"])
+            if certificate.returncode:
+                raise Refused("local_ca_unavailable", "cannot read this installation's public CA certificate")
+            for service in ("grafana", "loki", "tempo", "mimir", "alloy"):
+                wait_ready(f"{local_origin(settings, 'https')}/health/{service}", host=domain, ca_data=certificate.stdout)
         print(json.dumps({
             "status": "degraded" if delivery == "placeholder" else "ready",
             "problems": ["alert_delivery_placeholder"] if delivery == "placeholder" else [],
             "console": f"{scheme}://{origin}/",
-            "grafana": f"{scheme}://grafana.{origin}/",
+            "grafana": f"{scheme}://{settings['OB_GRAFANA_HOST']}{settings.get('OB_PUBLIC_PORT_SUFFIX', '')}/",
             "grafanaLogin": "admin",
             "next": "Log in to Grafana with admin and OB_GRAFANA_ADMIN_PASSWORD from .env; open Stacks or Explore.",
         }))

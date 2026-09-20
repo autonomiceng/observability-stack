@@ -46,6 +46,26 @@ loki.write "local" {
   }
 }
 
+// The stable network hostname serves metrics in every Edge access mode.
+discovery.relabel "edge" {
+  targets = [{
+    "__address__" = "pe-edge:80",
+    "__enabled" = sys.env("OB_SCRAPE_EDGE"),
+  }]
+  rule {
+    source_labels = ["__enabled"]
+    regex = "true"
+    action = "keep"
+  }
+}
+
+prometheus.scrape "edge" {
+  targets = discovery.relabel.edge.output
+  job_name = "platform-edge"
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
 discovery.relabel "gateway" {
   targets = [{
     "__address__" = "lg-litellm:4000",

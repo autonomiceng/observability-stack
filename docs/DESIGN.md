@@ -29,10 +29,15 @@ The `compose_project` and `service` label names are the collection interface.
 Compose projects matching `-(smoke|drill)(-|$)` are excluded from log collection.
 Containers outside Compose retain their container label. Docker must support its logs API;
 containers configured with the `none` log driver have no stream to collect.
+Every service uses the Linux `journald` Docker driver with `cache-disabled=true`.
+Producer startup and runtime logging do not depend on Alloy or a remote log service.
+Platform Edge containers are discovered by the same Docker API pipeline; URLs remain JSON
+fields and are never promoted to Loki labels. See `operations/logging.md` for the runtime
+logging audit, host prerequisites and evidence checks.
 
 Alloy scrapes LiteLLM, gateway Valkey/Postgres exporters and gateway Checkpoint metrics
-by default (`OB_SCRAPE_GATEWAY=true`). Set it
-to false for a standalone install; a hidden-label relabel rule removes the target. Another
+when enabled (`OB_SCRAPE_GATEWAY=true`, default false). A hidden-label relabel rule removes
+disabled targets. Another
 relabel rule removes the backplane target while `OB_BACKPLANE_OPERATIONS_TOKEN` is empty; a nonempty
 token enables the authenticated scrape. Enabled but missing stacks produce failed scrapes; disabled targets are absent, while Collector readiness stays independent of scrape success. Mimir receives
 remote-write at `/api/v1/push`; Grafana queries its `/prometheus` API. Embedded cAdvisor
@@ -71,6 +76,15 @@ placeholder reports degraded readiness. Generated provisioning lives in `OB_STAT
 Metric contracts and absent-source behavior are in `operations/maintenance.md`.
 
 ## Health and verification
+
+`OB_ACCESS_MODE` selects local (HTTP plus internal-CA HTTPS, no redirects or HSTS), public
+(ACME HTTPS with HTTP redirects except exact health routes), or proxy (HTTP only behind
+Platform Edge). Bootstrap records `compose.proxy.yaml` for proxy mode so port 443 is not
+published. `OB_SCHEME` describes the canonical external origin separately from listeners.
+The console's `/links.json` contains only configured application origins, including when
+the root console is opened through an IP or an arbitrary local HTTP hostname.
+Local readiness verifies both protocols using the installation's public CA certificate in
+memory. Private keys remain in the existing Caddy data volume; no host trust is installed.
 
 Caddy serves exact `/health/{grafana,loki,tempo,mimir,alloy}` routes. Optional sibling probes
 are `/health/gateway` and `/health/backplane`. Caddy's aggregate Docker healthcheck probes

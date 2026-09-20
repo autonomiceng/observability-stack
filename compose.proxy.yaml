@@ -1,0 +1,4 @@
+services:
+  caddy:
+    ports: !override
+      - "${OB_BIND_HOST:-127.0.0.1}:${OB_HTTP_PORT:-80}:80"

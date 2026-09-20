@@ -1,34 +1,41 @@
-# Stack Gateway. One Caddyfile for Local Mode and Public Mode (ADR-0001).
-# Local:  OB_SCHEME=http  OB_PUBLIC_DOMAIN=localhost      -> http://grafana.localhost
-# Public: OB_SCHEME=https OB_PUBLIC_DOMAIN=example.com    -> https://grafana.example.com
-# Behind platform-edge: OB_SCHEME=https, OB_LISTEN_SCHEME=http, OB_TLS_ISSUER=none
-# Static config only: no Docker socket, no caddy-docker-proxy.
 {
 	admin off
 	skip_install_trust
-	# platform-edge (or any proxy on this host) may sit in front; keep its
-	# X-Forwarded-Proto so Grafana sees https when TLS ends at the edge.
+	default_sni 127.0.0.1
+	auto_https disable_redirects
+	log default {
+		output stderr
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				resp_headers delete
+				request>uri regexp "[?].*$" ""
+			}
+		}
+	}
 	servers {
 		trusted_proxies static {$OB_TRUSTED_PROXIES}
 		trusted_proxies_strict
 	}
 }
 
-(ca-none) {
-}
-
-(ca-acme) {
-	tls {
-		issuer acme
+(access-log) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				resp_headers delete
+				request>uri regexp "[?].*$" ""
+			}
+		}
 	}
 }
 
-(ca-internal) {
-	tls internal
-}
-
 (app) {
-	import ca-{$OB_TLS_ISSUER}
+	import access-log
 	encode zstd gzip
 	# Operator surfaces stay on the Docker network; never through the gateway.
 	@operator path_regexp (?i)^/+metrics(/|$)
@@ -53,9 +60,7 @@
 	}
 }
 
-# Health routes are exact readiness probes; backend APIs stay private.
-{$OB_LISTEN_SCHEME}://{$OB_PUBLIC_DOMAIN} {
-	import ca-{$OB_TLS_ISSUER}
+(probes) {
 	handle /health/grafana {
 		rewrite * /api/health
 		import health grafana:3000 grafana:3000
@@ -96,6 +101,15 @@
 		respond @placeholder `{"status":"degraded"}` 503
 		respond `{"status":"ready"}` 200
 	}
+}
+
+(console) {
+	import access-log
+	import probes
+	handle /links.json {
+		root * /srv/state
+		file_server
+	}
 	handle /versions.json {
 		@operator client_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
 		handle @operator {
@@ -113,6 +127,60 @@
 	}
 }
 
-{$OB_LISTEN_SCHEME}://grafana.{$OB_PUBLIC_DOMAIN} {
-	import app grafana:3000
+(access-local) {
+	:80 {
+		header -Strict-Transport-Security
+		import console
+	}
+	http://{$OB_GRAFANA_HOST:grafana.localhost} {
+		header -Strict-Transport-Security
+		import app grafana:3000
+	}
+	https://{$OB_PUBLIC_DOMAIN:localhost}, https://127.0.0.1 {
+		tls internal
+		header -Strict-Transport-Security
+		import console
+	}
+	https://{$OB_GRAFANA_HOST:grafana.localhost} {
+		tls internal
+		header -Strict-Transport-Security
+		import app grafana:3000
+	}
 }
+
+(access-public) {
+	http://{$OB_PUBLIC_DOMAIN} {
+		import access-log
+		import probes
+		handle {
+			redir https://{$OB_PUBLIC_DOMAIN}{$OB_PUBLIC_PORT_SUFFIX}{uri} 308
+		}
+	}
+	http://{$OB_GRAFANA_HOST} {
+		import access-log
+		redir https://{$OB_GRAFANA_HOST}{$OB_PUBLIC_PORT_SUFFIX}{uri} 308
+	}
+	https://{$OB_PUBLIC_DOMAIN} {
+		tls {
+			issuer acme
+		}
+		import console
+	}
+	https://{$OB_GRAFANA_HOST} {
+		tls {
+			issuer acme
+		}
+		import app grafana:3000
+	}
+}
+
+(access-proxy) {
+	:80 {
+		import console
+	}
+	http://{$OB_GRAFANA_HOST} {
+		import app grafana:3000
+	}
+}
+
+import access-{$OB_ACCESS_MODE:local}
