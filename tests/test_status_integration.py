@@ -58,9 +58,10 @@ class StatusIntegrationTests(unittest.TestCase):
     def test_installer_canonicalizes_symlinked_checkout_and_env(self):
         env = self.root / 'chosen.env'
         env.touch()
-        link = self.root.parent / (self.root.name + '-checkout')
+        links = tempfile.TemporaryDirectory()
+        self.addCleanup(links.cleanup)
+        link = Path(links.name) / 'checkout'
         link.symlink_to(self.root, target_is_directory=True)
-        self.addCleanup(link.unlink)
         units = self.root / 'units'
         installer.install(link, link / env.name, units, lambda argv, **kw: None)
         service = (units / 'observability-status.service').read_text()

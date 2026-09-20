@@ -15,6 +15,7 @@ def check(env_file, settings):
     public = state / 'console/status.json'
     # Fresh inspection, never Docker's health label as a substitute for the probes.
     document = status_observer.observe(root, env_file)
+    assert document is not None, 'another observer holds the installation lock'
     rows = {row['id']: row for row in document['components']}
     for name in ('caddy', 'grafana', 'alloy', 'loki', 'mimir', 'tempo'):
         assert rows[name]['state'] == 'healthy', (name, rows[name]['state'])

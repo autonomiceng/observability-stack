@@ -162,7 +162,7 @@ IDs, addresses, host paths, environments, commands, credentials and errors are e
 Publication writes a same-directory temporary file, flushes and fsyncs it, then replaces
 the public file atomically. A serialized writer reclaims the fixed per-destination temporary
 name after abrupt termination. Public JSON is mode 0644. Private task records are mode
-0600 under `OB_STATE_DIR/status` mode 0700. The output directory must be owned by the
+0600 under `OB_STATE_DIR/status`, created with mode 0700. The output directory must be owned by the
 observer user without group/other write permission; symlinked directory paths and
 symlink/hardlink output files are refused. Bootstrap creates the console directory with mode 0755 subject to the operator umask;
 it precreates the state root with ordinary umask-derived permissions before status recording.
@@ -198,3 +198,5 @@ only the two generated units before reinstalling; partial activation may already
 have started observation. The installer deliberately retains those units for
 inspection and will not overwrite them. A concurrent observer holding this
 installation's lock makes a new invocation a successful no-op.
+
+Docker endpoint agreement is conservative and byte-exact. Use the same Unix socket spelling for `DOCKER_HOST` and the selected context (for example, both `/var/run/docker.sock`); aliases such as `/run/docker.sock` can otherwise produce unknown observations.
