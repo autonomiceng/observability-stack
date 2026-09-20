@@ -31,6 +31,8 @@ _Avoid_: Collector, mesh
 
 **Stack Console**:
 The unauthenticated page with application links, readiness and configured versions.
+Its public `/status.json` also exposes allowlisted observed versions and image digests
+in every access mode.
 _Avoid_: Dashboard, admin UI
 
 **Platform Network**:
