@@ -64,7 +64,35 @@
 	}
 }
 
+# Public allowlist only. The observer's private records have no Caddy mount.
+(status) {
+	handle /status.json {
+		route {
+			request_header -Authorization
+			request_header -Proxy-Authorization
+			request_header -Cookie
+			# Prevent conditional/range requests from extending a frozen observation.
+			request_header -If-None-Match
+			request_header -If-Modified-Since
+			request_header -Range
+			header Content-Type application/json
+			header Cache-Control no-store
+			@unsupported not method GET HEAD
+			header @unsupported Allow "GET, HEAD"
+			respond @unsupported "" 405
+			root * /srv/state
+			@missing not file /status.json
+			respond @missing "" 404
+			file_server
+		}
+	}
+}
+
 (probes) {
+	import status
+	handle /health/status {
+		respond "ok" 200
+	}
 	handle /health/grafana {
 		rewrite * /api/health
 		import health grafana:3000 grafana:3000

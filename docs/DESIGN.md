@@ -97,6 +97,15 @@ all five own upstreams. Mimir and Tempo are distroless, so backend readiness is 
 HTTP from Caddy rather than by installing another executable in their containers. The smoke
 contract checks each endpoint as well as container state.
 
+An optional host Python observer publishes `/status.json` through the existing console
+state mount, unauthenticated in every access mode, including public internet access.
+It includes allowlisted version and image digest metadata. Configuration observations, bounded component probes,
+runtime image identity and installation task execution times have independent evidence;
+120-second validity prevents a stopped observer from reporting current success. The host
+user owns Docker access; Caddy only reads the public JSON. Bootstrap attempts an initial
+observation after readiness, and a separate opt-in user timer refreshes it every 30 seconds.
+See `operations/status.md` for the exact probe claims, limits and operator steps.
+
 Compose retains tested digest defaults and accepts complete `OB_*_IMAGE` references from `.env`.
 Checkpoint tools verify effective content identity before capturing or restoring experiments.
 

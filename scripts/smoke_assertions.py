@@ -60,6 +60,8 @@ def check(env_file: Path, origin: str, project: str) -> None:
     lines, _ = read_env(env_file)
     settings = {match['key']: bootstrap.unquote(match['value']) for match in map(bootstrap.ENV_LINE.match, lines) if match}
     check_access(env_file, settings)
+    from smoke_status import check as check_status
+    check_status(env_file, settings)
 
     for service in ('grafana', 'loki', 'tempo', 'mimir', 'alloy'):
         get(base + '/health/' + service)
