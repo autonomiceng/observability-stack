@@ -147,8 +147,10 @@ def images(compose: Path) -> dict[str, str]:
         match = IMAGE_LINE.match(line)
         if match and service:
             ref = match.group("ref")
-            fallback = re.fullmatch(r"\$\{OB_[A-Z]+_IMAGE:-(.+)\}", ref)
+            fallback = re.fullmatch(r"\$\{OB_[A-Z0-9_]+_IMAGE:-(.+)\}", ref)
             out[service] = fallback[1] if fallback else ref
+            if '${' in out[service]:
+                raise ValueError(f'{service}: unrecognized image default')
     return out
 
 
@@ -543,7 +545,10 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             backup_dir = root / backup_dir
         backup_dir.mkdir(parents=True, exist_ok=True)
         resolved = runner(["docker", "compose", "--project-directory", str(root),
-                           "--env-file", str(env_file), "config", "--format", "json"])
+                           "--env-file", str(env_file), "-f", str(compose),
+                           *(["-f", str(root / "compose.s3.yaml"), "--profile", "s3"] if s3 else []),
+                           *(["-f", str(root / "compose.proxy.yaml")] if proxy else []),
+                           "config", "--format", "json"])
         if resolved.returncode:
             raise Refused("compose_config_failed", "inspect Compose configuration privately")
         write_versions(root, compose, settings, services=json.loads(resolved.stdout)["services"])

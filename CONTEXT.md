@@ -53,6 +53,10 @@ _Avoid_: Public Mode, Local Mode
 An image identified by a stable tag and immutable digest that has passed the Smoke Contract.
 _Avoid_: Latest, floating tag
 
+**Effective Image**:
+The image selected by native Compose after applying an optional `OB_*_IMAGE` override.
+A tag or local image is an operator experiment; the shipped Pinned Version remains the default.
+
 **Smoke Contract**:
 The executable proof that a disposable fresh installation is healthy, authenticated and ingesting telemetry.
 _Avoid_: Unit suite, static validation

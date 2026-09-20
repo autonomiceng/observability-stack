@@ -26,6 +26,20 @@ def image_result(argv):
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_image_preflight_names_the_service_and_remedy_without_diagnostics(self):
+        stack = object.__new__(checkpoint.Stack)
+        stack.config = {'services': {'loki': {'image': 'private.example/loki:trial'}}}
+        for failure in ('configured', 'digest'):
+            with self.subTest(failure=failure):
+                def runner(argv):
+                    if failure == 'configured' or '@' in argv[-1]:
+                        return subprocess.CompletedProcess(argv, 1, '', 'private-credential')
+                    return image_result(argv)
+                stack.runner = runner
+                with self.assertRaisesRegex(RuntimeError, 'loki: image unavailable locally; pull or load') as error:
+                    stack.resolve_images()
+                self.assertNotIn('private', str(error.exception))
+
     def test_capture_prefers_the_configured_registry_with_a_port(self):
         stack = object.__new__(checkpoint.Stack)
         reference = 'registry.example:5000/store:trial'

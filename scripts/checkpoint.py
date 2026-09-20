@@ -38,7 +38,8 @@ def checked(argv, runner=bootstrap.run):
     result = runner(argv)
     if result.returncode:
         # Compose errors can contain interpolated secrets. Do not echo their output.
-        raise RuntimeError(f'{argv[0]} operation failed (exit {result.returncode}); inspect service logs privately')
+        tool = 'docker' if argv[0] == 'env' and 'docker' in argv else argv[0]
+        raise RuntimeError(f'{tool} operation failed (exit {result.returncode}); inspect service logs privately')
     return result.stdout.strip()
 
 
@@ -129,26 +130,37 @@ class Stack:
         refs, ids = {}, {}
         for service, config in self.config['services'].items():
             ref = config['image']
-            local = json.loads(checked(['docker', 'image', 'inspect', ref], self.runner))[0]
+            def inspect(reference):
+                probe = self.runner(['docker', 'image', 'inspect', reference])
+                if probe.returncode:
+                    raise RuntimeError(f'{service}: image unavailable locally; pull or load the exact '
+                                       'configured or checkpoint image before capture or restore')
+                return json.loads(probe.stdout)[0]
+            local = inspect(ref)
             identity = local['Id']
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', identity):
                 raise RuntimeError('invalid local image identity')
             candidates = [ref] if '@' in ref else sorted(local.get('RepoDigests') or [],
                 key=lambda value: (image_repository(value) != image_repository(ref), value))
             for candidate in candidates:
-                candidate = immutable_ref(candidate)
-                verified = json.loads(checked(['docker', 'image', 'inspect', candidate], self.runner))[0]
+                try:
+                    candidate = immutable_ref(candidate)
+                except RuntimeError:
+                    continue
+                verified = inspect(candidate)
                 if verified['Id'] == identity:
                     refs[service], ids[service] = candidate, identity
                     break
             else:
-                raise RuntimeError('Checkpoint requires locally verified RepoDigests; local-only images refused')
+                raise RuntimeError(f'{service}: Checkpoint requires locally verified RepoDigests; '
+                                   'publish and pull the exact experiment or select a digest reference before capture')
         self.images, self.image_ids = refs, ids
         self.image = ids.get('caddy')
         # Keep resume/restore on the attested content even if a tag moves afterward.
         self.image_overrides = {
             'OB_' + service.removesuffix('-init').upper() + '_IMAGE': ref
             for service, ref in refs.items()
+            if '@' not in self.config['services'][service]['image']
         }
 
     def helper(self, mounts, script, *args, network='none', timeout=None):
@@ -631,6 +643,10 @@ def restore(stack, source):
     installation.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source / 'installation', installation, dirs_exist_ok=True)
     stack.start()
+    if stack.image_overrides:
+        print('Retain these verified image overrides in the installation .env before the next Compose update:')
+        for key, ref in sorted(stack.image_overrides.items()):
+            print(f'{key}={ref}')
     print('Restore complete; all five readiness probes passed', flush=True)
 
 

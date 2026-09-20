@@ -170,7 +170,8 @@ Manifest v2 records active services and their immutable references. Restore reso
 env's effective images locally and compares immutable references before checking destination
 volumes or writing data. A tag that moved is refused; set the corresponding `OB_*_IMAGE` to
 the captured reference. Restore and capture resumption pin newly created services to the verified
-references for that invocation. Retain those overrides in `.env` for subsequent native Compose
+references for that invocation; already digest-pinned references stay unchanged. Restore prints
+any required overrides. Retain those overrides in `.env` for subsequent native Compose
 operations. Original secrets, storage mode and configuration must still match.
 Legacy v1 manifests remain accepted with their original byte-identical configuration checkout
 and shipped pin list; effective active images must resolve to those same immutable references.
@@ -277,7 +278,7 @@ Tempo must still stop with exit zero and without OOM. Queue length does not meas
 executing queries, and sampling cannot exclude activity between probes. Keep direct query
 clients paused throughout the fence; this check is not a guarantee that all queries finished.
 
-Tempo is distroless. Each probe uses the pinned Caddy helper image with `wget` in the network
+Tempo is distroless. Each probe uses the verified Caddy image content ID with `wget` in the network
 namespace of a running Tempo container whose project/service labels have been verified.
 It reads `127.0.0.1:3200/metrics` inside that namespace, including with a remote Docker daemon.
 The helper retains its unique ownership label and is removed before the next probe. Its

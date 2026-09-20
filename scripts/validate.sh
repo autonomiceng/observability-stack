@@ -82,6 +82,13 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
     assert set(services) == expected, f'{path}: unexpected services'
     assert services['tempo'].get('stop_grace_period') == '45s', 'Tempo stop grace'
 PY
+python3 - <<'PY_IMAGES'
+import re
+from pathlib import Path
+lines = [line.strip() for line in Path('compose.yaml').read_text().splitlines() if line.strip().startswith('image:')]
+assert len(lines) == 8
+assert all(re.fullmatch(r'image: \$\{OB_[A-Z0-9_]+_IMAGE:-[^\s{}]+:[^\s:@]+@sha256:[0-9a-f]{64}\}', line) for line in lines), 'Renovate-readable image defaults'
+PY_IMAGES
 echo 'compose config and pins: PASS'
 python3 - "$work" <<'PY'
 import json, subprocess, sys
