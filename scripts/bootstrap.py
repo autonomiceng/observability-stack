@@ -432,7 +432,7 @@ def compose_selection(root: Path, settings: dict[str, str], s3: bool, proxy: boo
             ((root / "compose.s3.yaml") in resolved) != s3 or
             ((root / "compose.proxy.yaml") in resolved) != proxy):
         raise Refused("compose_file_conflict", "retain the base first and overlays matching the selected storage and access modes")
-    if saved and saved not in generated and any(not path.is_file() for path in resolved):
+    if any(not path.is_file() for path in resolved):
         raise Refused("compose_file_conflict", "a selected Compose file is missing")
     selected = ":".join(files)
     if os.environ.get("COMPOSE_FILE") and os.environ["COMPOSE_FILE"] != selected:

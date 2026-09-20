@@ -47,6 +47,8 @@ class BootstrapTests(unittest.TestCase):
         self.env = self.root / ".env"
         self.template = Path(__file__).resolve().parent.parent / ".env.example"
         shutil.copytree(self.template.parent / 'docker', self.root / 'docker')
+        for name in ('compose.yaml', 'compose.s3.yaml', 'compose.proxy.yaml'):
+            shutil.copy(self.template.parent / name, self.root / name)
         self.alert_env = patch.dict(os.environ, {'OB_ALERTS': 'placeholder'})
         self.alert_env.start()
         self.addCleanup(self.alert_env.stop)
@@ -646,6 +648,10 @@ class BootstrapTests(unittest.TestCase):
             for call in calls:
                 self.assertEqual([call[i + 1] for i, arg in enumerate(call) if arg == "-f"],
                                  [str(self.root / "compose.yaml"), str(custom), str(self.root / "compose.proxy.yaml")])
+        (self.root / "compose.proxy.yaml").unlink()
+        with self.assertRaises(bootstrap.Refused):
+            bootstrap.compose_selection(self.root, {}, False, True)
+        shutil.copy(self.template.parent / "compose.proxy.yaml", self.root / "compose.proxy.yaml")
         for value in ("operator.yaml:compose.yaml:compose.proxy.yaml", "compose.yaml:missing.yaml:compose.proxy.yaml",
                       "compose.yaml:operator.yaml", "compose.yaml:operator.yaml:compose.proxy.yaml:operator.yaml"):
             with self.subTest(value=value), self.assertRaises(bootstrap.Refused):
