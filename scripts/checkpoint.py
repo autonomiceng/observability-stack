@@ -68,7 +68,7 @@ def image_repository(ref):
 
 
 def immutable_ref(ref):
-    if not re.fullmatch(r'[a-z0-9][a-zA-Z0-9./:_-]*@sha256:[0-9a-f]{64}', ref):
+    if not isinstance(ref, str) or not re.fullmatch(r'[a-z0-9][a-zA-Z0-9./:_-]*@sha256:[0-9a-f]{64}', ref):
         raise RuntimeError('Checkpoint requires a reproducible immutable image reference')
     name, digest = ref.split('@')
     if ':' in name.rsplit('/', 1)[-1]:
@@ -155,6 +155,10 @@ class Stack:
                     refs[service], ids[service] = candidate, identity
                     break
             else:
+                if captured is not None:
+                    raise RuntimeError(f'{service}: configured image content differs from the captured '
+                                       'Checkpoint reference; set the matching OB_*_IMAGE to the '
+                                       'reference recorded in manifest.json')
                 raise RuntimeError(f'{service}: Checkpoint requires locally verified RepoDigests; '
                                    'publish and pull the exact experiment or select a digest reference before capture')
         self.images, self.image_ids = refs, ids
@@ -610,9 +614,6 @@ def verify_checkpoint(stack, source):
             raise RuntimeError('Checkpoint legacy image pins differ')
         captured = {name: defaults[name] for name in stack.config['services']}
     stack.resolve_images(captured)
-    if (not isinstance(captured, dict) or set(captured) != set(stack.images)
-            or any(immutable_ref(ref) != stack.images[name] for name, ref in captured.items())):
-        raise RuntimeError('Checkpoint immutable image identities differ')
     verify_archives(source, stack.volumes)
     lines, _ = bootstrap.read_env(stack.env_file)
     present = {match['key'] for match in map(bootstrap.ENV_LINE.match, lines) if match}
@@ -686,6 +687,7 @@ def cli():
     except bootstrap.Refused as error:
         # Refused.detail can contain raw Docker output or interpolated settings.
         details = {
+            'image_default_unrecognized': 'compose.yaml has an image default this tooling cannot parse',
             'env_repair_required': 'repair managed keys in the original .env',
             'alert_delivery_invalid': 'check alert delivery settings in the original .env',
             'alert_delivery_required': 'configure alert delivery or explicitly select OB_ALERTS=placeholder',

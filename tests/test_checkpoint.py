@@ -829,7 +829,7 @@ class CheckpointVerificationTests(unittest.TestCase):
 
     def test_verify_checkpoint_rejects_corruption_extra_files_symlinks_pins_and_config(self):
         checkpoint.verify_checkpoint(self.stack, self.source)
-        for defect in ('hash', 'extra', 'symlink', 'pins', 'identity', 'mutable', 'config'):
+        for defect in ('hash', 'extra', 'symlink', 'pins', 'identity', 'mutable', 'non-string', 'config'):
             with self.subTest(defect=defect):
                 source = self.root / defect
                 shutil.copytree(self.source, source)
@@ -839,16 +839,18 @@ class CheckpointVerificationTests(unittest.TestCase):
                     (source / 'extra').write_text('unexpected')
                 elif defect == 'symlink':
                     (source / 'extra').symlink_to(self.env)
-                elif defect in ('pins', 'identity', 'mutable'):
+                elif defect in ('pins', 'identity', 'mutable', 'non-string'):
                     doc = json.loads((source / 'manifest.json').read_text())
                     doc['images'] = {'loki': PIN.replace('a' * 64, 'c' * 64)} if defect == 'identity' else (
-                        {'loki': 'example/loki:mutable'} if defect == 'mutable' else ['different-pin'])
+                        {'loki': 'example/loki:mutable'} if defect == 'mutable' else
+                        {'loki': 123} if defect == 'non-string' else ['different-pin'])
                     (source / 'manifest.json').write_text(json.dumps(doc))
                 else:
                     (source / 'configuration/config.alloy').write_text('different config')
                     self.publish(source)
                 self.stack.check_empty = Mock()
-                with self.assertRaises(RuntimeError):
+                message = 'captured Checkpoint reference' if defect in ('identity', 'mutable', 'non-string') else '.'
+                with self.assertRaisesRegex(RuntimeError, message):
                     checkpoint.restore(self.stack, source)
                 self.stack.check_empty.assert_not_called()
                 self.assertFalse(self.stack.state.exists())

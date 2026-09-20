@@ -312,3 +312,5 @@ completes.
 
 Upstream sources: [frontend metrics](https://github.com/grafana/tempo/blob/v3.0.3/modules/frontend/v1/frontend.go)
 and [queue lifecycle](https://github.com/grafana/tempo/blob/v3.0.3/modules/frontend/queue/queue.go).
+
+Manifest v2 records `imageCustody: "external"` as informational metadata. It means image bytes are retained separately from the Checkpoint; restore verifies recorded references regardless of this annotation.
