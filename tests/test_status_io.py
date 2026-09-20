@@ -45,20 +45,26 @@ class StatusIOTests(unittest.TestCase):
         self.assertFalse(same_process_running(), 'captured descendant survived cleanup')
 
     def test_public_atomic_mode_and_old_file_survives_replace_failure(self):
-        with io.directory(self.root / 'console') as fd:
-            mask = os.umask(0o077)
-            try:
+        state = self.root / 'state'
+        mask = os.umask(0o077)
+        try:
+            with io.directory(state / 'status', 0o700):
+                pass
+            with io.directory(state / 'console') as fd:
                 io.publish(fd, 'status.json', {'old': True})
-            finally:
-                os.umask(mask)
-            path = self.root / 'console/status.json'
-            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
-            before = path.read_bytes()
-            with patch.object(io.os, 'replace', side_effect=OSError('SECRET')):
-                with self.assertRaises(OSError):
-                    io.publish(fd, 'status.json', {'new': True})
-            self.assertEqual(path.read_bytes(), before)
-            self.assertEqual(list(path.parent.iterdir()), [path])
+                path = state / 'console/status.json'
+                self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+                before = path.read_bytes()
+                with patch.object(io.os, 'replace', side_effect=OSError('SECRET')):
+                    with self.assertRaises(OSError):
+                        io.publish(fd, 'status.json', {'new': True})
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(list(path.parent.iterdir()), [path])
+        finally:
+            os.umask(mask)
+        self.assertEqual(state.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((state / 'status').stat().st_mode & 0o777, 0o700)
+        self.assertEqual((state / 'console').stat().st_mode & 0o777, 0o755)
 
     def test_failed_flush_and_oversize_preserve_previous_document(self):
         with io.directory(self.root) as fd:
