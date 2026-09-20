@@ -22,6 +22,7 @@ class ReviewFixTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = root / '.env'
+            (root / 'compose.yaml').write_bytes((template.parent / 'compose.yaml').read_bytes())
             with patch.object(bootstrap, '__file__', str(root / 'scripts/bootstrap.py')), \
                  patch.object(bootstrap.shutil, 'which', return_value=None), \
                  patch.object(bootstrap.subprocess, 'run', side_effect=FileNotFoundError('docker')) as run, \

@@ -418,13 +418,37 @@ def access_config(settings: dict[str, str]) -> None:
             raise Refused("proxy_trust_invalid", "trust only exact proxy IPs or /32 and /128 host routes") from error
 
 
-def compose_up(root: Path, env_file: Path, runner: Runner, s3: bool = False, proxy: bool = False) -> None:
+def compose_selection(root: Path, settings: dict[str, str], s3: bool, proxy: bool) -> list[str]:
+    defaults = ["compose.yaml"] + (["compose.s3.yaml"] if s3 else []) + (["compose.proxy.yaml"] if proxy else [])
+    saved = settings.get("COMPOSE_FILE", "")
+    generated = {":".join(["compose.yaml"] + extra) for extra in
+                 ([], ["compose.s3.yaml"], ["compose.proxy.yaml"], ["compose.s3.yaml", "compose.proxy.yaml"])}
+    # Keep generated mode selection compatible; preserve every custom overlay in order.
+    files = defaults if not saved or saved in generated else saved.split(":")
+    resolved = [(root / name).resolve() for name in files]
+    if (not files or resolved[0] != root / "compose.yaml" or
+            any(not name or any(c in name for c in "\n\r$`") for name in files) or
+            len(set(resolved)) != len(resolved) or
+            ((root / "compose.s3.yaml") in resolved) != s3 or
+            ((root / "compose.proxy.yaml") in resolved) != proxy):
+        raise Refused("compose_file_conflict", "retain the base first and overlays matching the selected storage and access modes")
+    if any(not path.is_file() for path in resolved):
+        raise Refused("compose_file_conflict", "a selected Compose file is missing")
+    selected = ":".join(files)
+    if os.environ.get("COMPOSE_FILE") and os.environ["COMPOSE_FILE"] != selected:
+        raise Refused("compose_file_conflict", "unset COMPOSE_FILE or record the same selection in .env")
+    settings["COMPOSE_FILE"] = selected
+    return files
+
+
+def compose_up(root: Path, env_file: Path, runner: Runner, s3: bool = False, proxy: bool = False,
+               files: list[str] | None = None) -> None:
     # Fifteen minutes includes cold image pulls; a timeout preserves cached layers for retry.
     result = runner([
         "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
-        "-f", str(root / "compose.yaml"),
-        *(["-f", str(root / "compose.s3.yaml"), "--profile", "s3"] if s3 else []),
-        *(["-f", str(root / "compose.proxy.yaml")] if proxy else []),
+        *[arg for name in (files or (["compose.yaml"] + (["compose.s3.yaml"] if s3 else []) +
+                                    (["compose.proxy.yaml"] if proxy else []))) for arg in ("-f", str(root / name))],
+        *(["--profile", "s3"] if s3 else []),
         "up", "--detach", "--wait", "--wait-timeout", "300",
     ], timeout=900)
     if result.returncode != 0:
@@ -522,9 +546,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
         access_config(settings)
         s3 = "s3" in settings.get("COMPOSE_PROFILES", "").split(",")
         proxy = settings["OB_ACCESS_MODE"] == "proxy"
-        settings["COMPOSE_FILE"] = ":".join(["compose.yaml"] + (["compose.s3.yaml"] if s3 else []) + (["compose.proxy.yaml"] if proxy else []))
-        if os.environ.get("COMPOSE_FILE") and os.environ["COMPOSE_FILE"] != settings["COMPOSE_FILE"]:
-            raise Refused("compose_file_conflict", "unset COMPOSE_FILE; bootstrap selects the storage and access overrides")
+        files = compose_selection(root, settings, s3, proxy)
         project = project_name(settings)
         prefix = settings.get("OB_VOLUME_PREFIX") or PROJECT
         state_dir = Path(settings.get("OB_STATE_DIR", "./data"))
@@ -614,9 +636,9 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
                 backup_dir = root / backup_dir
             backup_dir.mkdir(parents=True, exist_ok=True)
             resolved = runner(["docker", "compose", "--project-directory", str(root),
-                               "--env-file", str(env_file), "-f", str(compose),
-                               *(["-f", str(root / "compose.s3.yaml"), "--profile", "s3"] if s3 else []),
-                               *(["-f", str(root / "compose.proxy.yaml")] if proxy else []),
+                               "--env-file", str(env_file),
+                               *[arg for name in files for arg in ("-f", str(root / name))],
+                               *(["--profile", "s3"] if s3 else []),
                                "config", "--format", "json"])
             if resolved.returncode:
                 raise Refused("compose_config_failed", "inspect Compose configuration privately")
@@ -625,7 +647,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
 
             ensure_network(runner, settings.get("OB_PLATFORM_NETWORK", NETWORK))
             ensure_volumes(runner, prefix, project, s3)
-            compose_up(root, env_file, runner, s3, proxy)
+            compose_up(root, env_file, runner, s3, proxy, files)
             scheme = settings.get("OB_SCHEME", "http")
             domain = settings.get("OB_PUBLIC_DOMAIN", "localhost")
             origin = domain + settings.get("OB_PUBLIC_PORT_SUFFIX", "")
