@@ -81,7 +81,12 @@ Metric contracts and absent-source behavior are in `operations/maintenance.md`.
 (ACME HTTPS with HTTP redirects except exact health routes), or proxy (HTTP only behind
 Platform Edge). Bootstrap records `compose.proxy.yaml` for proxy mode so port 443 is not
 published. `OB_SCHEME` describes the canonical external origin separately from listeners.
-The console's `/links.json` contains only configured application origins, including when
+An optional `OB_GRAFANA_URL` overrides Grafana's browser origin and domain without
+changing its internal hostname or the listener mode. In proxy mode Caddy matches its
+full authority, including the port, so other services on the same machine hostname
+stay separate. Platform Edge preserves that authority and supplies trusted HTTPS
+forwarding. Bootstrap derives the authority and hostname consumed by Compose.
+The console's `/links.json` contains configured Grafana and optional sibling URLs, including when
 the root console is opened through an IP or an arbitrary local HTTP hostname.
 Local readiness verifies both protocols using the installation's public CA certificate in
 memory. Private keys remain in the existing Caddy data volume; no host trust is installed.

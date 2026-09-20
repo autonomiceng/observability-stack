@@ -287,6 +287,60 @@ class BootstrapTests(unittest.TestCase):
         context.assert_called_once_with(cadata="public-root")
         connection.assert_called_once_with("localhost", port=18443, timeout=5, context=context.return_value)
 
+    def test_grafana_url_explicit_default_and_invalid_origins(self):
+        for mode in ("local", "public", "proxy"):
+            settings = {"OB_ACCESS_MODE": mode, "OB_PUBLIC_DOMAIN": "observe.example.com",
+                        "OB_TRUSTED_PROXIES": "192.0.2.2/32", "OB_PUBLIC_PORT_SUFFIX": ":9443"}
+            bootstrap.access_config(settings)
+            scheme = "http" if mode == "local" else "https"
+            self.assertEqual(bootstrap.grafana_origin(settings), scheme + "://grafana.observe.example.com:9443")
+            settings["OB_GRAFANA_URL"] = "https://darkforge.tail694fe2.ts.net:8447"
+            bootstrap.access_config(settings)
+            self.assertEqual(bootstrap.grafana_origin(settings), settings["OB_GRAFANA_URL"])
+            self.assertEqual(settings["OB_GRAFANA_URL_HOST"], "darkforge.tail694fe2.ts.net")
+            self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "darkforge.tail694fe2.ts.net:8447")
+            self.assertEqual(settings["OB_GRAFANA_HOST"], "grafana.observe.example.com")
+            settings["OB_GRAFANA_URL"] = ""
+            bootstrap.access_config(settings)
+            self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "")
+            self.assertEqual(settings["OB_GRAFANA_URL_HOST"], "")
+        for origin in ("https://localhost", "http://127.0.0.1:8080", "https://[::1]:8447"):
+            bootstrap.access_config({"OB_GRAFANA_URL": origin})
+        for origin in ("ftp://host", "//host:8447", "https://", "https://host/", "https://host/path",
+                       "https://user:password@host", "https://host?", "https://host#", "https://host?q=x",
+                       "https://host#fragment", "https://host:0", "https://host:65536", "https://host:abc",
+                       "https://host:", "https://host:08447", "https://bad_host", "https://-host",
+                       "https://host..name", "https://host\\path", " https://host", "https://ho\nst",
+                       "https://host'", "https://{host}"):
+            with self.subTest(origin=origin), self.assertRaises(bootstrap.Refused) as refused:
+                bootstrap.access_config({"OB_GRAFANA_URL": origin})
+            self.assertEqual(refused.exception.code, "grafana_url_invalid")
+
+    def test_generated_grafana_origin_and_console_links(self):
+        source = self.template.parent
+        (self.root / "compose.yaml").write_text((source / "compose.yaml").read_text())
+        origin = "https://darkforge.tail694fe2.ts.net:8447"
+        for siblings in (False, True):
+            _, existing = bootstrap.read_env(self.env)
+            retained = "".join(f"{key}={value}\n" for key, value in existing.items())
+            self.env.write_text(retained + "OB_ACCESS_MODE=proxy\nOB_TRUSTED_PROXIES=192.0.2.2/32\n"
+                                "OB_GRAFANA_URL=" + origin + "\n" +
+                                ("OB_GATEWAY_URL=https://darkforge.tail694fe2.ts.net:8443\n"
+                                 "OB_BACKPLANE_URL=https://darkforge.tail694fe2.ts.net:8445\n" if siblings else ""))
+            with patch.object(bootstrap, "__file__", str(self.root / "scripts/bootstrap.py")), \
+                 patch.object(bootstrap, "wait_ready"):
+                self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner_with()), 0)
+            lines, _ = bootstrap.read_env(self.env)
+            settings = {m['key']: bootstrap.unquote(m['value']) for m in map(bootstrap.ENV_LINE.match, lines) if m}
+            self.assertEqual(settings["OB_GRAFANA_URL"], origin)
+            self.assertEqual(settings["OB_GRAFANA_URL_HOST"], "darkforge.tail694fe2.ts.net")
+            self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "darkforge.tail694fe2.ts.net:8447")
+            expected = {"grafana": origin}
+            if siblings:
+                expected.update(gateway=settings["OB_GATEWAY_URL"], backplane=settings["OB_BACKPLANE_URL"])
+            self.assertEqual(json.loads((self.root / "data/console/links.json").read_text()), expected)
+            self.assertEqual(settings["OB_TRUSTED_PROXIES"], "192.0.2.2/32")
+
     def test_proxy_records_override_and_starts_with_it_in_both_storage_modes(self):
         for profile in ("", "s3"):
             self.env.write_text("OB_ACCESS_MODE=proxy\nOB_SCHEME=https\nOB_TRUSTED_PROXIES=192.0.2.2\nCOMPOSE_PROFILES=" + profile + "\n")

@@ -7,6 +7,13 @@ Caddy is the only published entry.
 | `<domain>` | Stack Console and exact `/health/*` probes |
 | `OB_GRAFANA_HOST` (default `grafana.<domain>`) | Grafana |
 
+`OB_GRAFANA_URL` optionally sets Grafana's full browser origin, including its port.
+Leave it empty to keep the mode, hostname and port suffix defaults. It accepts an
+HTTP or HTTPS origin with no trailing slash, path, credentials, query or fragment.
+It sets Grafana's root URL and domain and the console links. `OB_GRAFANA_HOST` remains
+the internal route hostname. The URL does not change listeners or issue certificates;
+use proxy mode when Platform Edge serves it.
+
 Set `OB_ACCESS_MODE` before running bootstrap. Bootstrap records the browser URL protocol, Grafana hostname and Compose file selection. Run bootstrap again after changing mode.
 
 | Mode | Listeners | Certificates | HTTP behavior | Default external scheme |
@@ -81,6 +88,54 @@ Keep a loopback bind unless direct remote HTTP access is intentional. Edge forwa
 `ob-gateway:80`, retaining the configured root or Grafana Host and setting the external
 `X-Forwarded-Proto`. Trusted forwarding preserves HTTPS for Grafana even though its
 upstream connection is HTTP. No certificate or trust material is copied into this stack.
+
+## Tailscale on one machine hostname
+
+Platform Edge can serve Grafana on a separate HTTPS port of the machine's Tailscale
+hostname. For example, set these values in this stack's existing `.env`:
+
+```sh
+OB_ACCESS_MODE=proxy
+OB_PUBLIC_DOMAIN=darkforge.tail694fe2.ts.net
+OB_GRAFANA_HOST=grafana.localhost
+OB_GRAFANA_URL=https://darkforge.tail694fe2.ts.net:8447
+OB_SCHEME=https
+OB_PUBLIC_PORT_SUFFIX=:8446
+OB_BIND_HOST=127.0.0.1
+OB_HTTP_PORT=18180
+OB_TRUSTED_PROXIES=192.0.2.2/32
+```
+
+Replace `192.0.2.2/32` with Edge's exact Docker source IP. Port 18180 is the stack's
+loopback HTTP port; choose a free one. In this example port 8446 serves the Stack
+Console and port 8447 serves Grafana. Edge owns the HTTPS listeners and certificates.
+Keep the existing secrets, state directory, volume prefix and storage profile.
+Run bootstrap again after changing the settings. It records `OB_GRAFANA_URL_HOST`
+and `OB_GRAFANA_AUTHORITY` for Compose; these are derived values, not operator settings.
+
+Configure Edge's Grafana listener to forward to `ob-gateway:80`, preserve
+`Host: darkforge.tail694fe2.ts.net:8447`, and overwrite `X-Forwarded-Proto` with
+`https`. Edge must also supply the connecting client's address correctly. The stack
+accepts forwarded information only from its configured exact peers. Give operators'
+actual client addresses access through `OB_OPERATOR_ALLOW`; keep that list separate
+from the Edge peer list.
+
+Caddy matches the full external authority, including `:8447`. Requests for the same
+hostname on other ports stay on console routes. The internal `grafana.localhost`
+route and root health routes continue to work. Keep the internal Grafana hostname
+separate from the external machine hostname so internal routing has its own name.
+Grafana login remains required, and `/metrics` remains blocked at the Stack Gateway.
+
+Optional siblings can use their own ports on the same hostname:
+
+```sh
+OB_GATEWAY_URL=https://darkforge.tail694fe2.ts.net:8443
+OB_BACKPLANE_URL=https://darkforge.tail694fe2.ts.net:8445
+```
+
+Use the ports actually configured at Edge. Leave these values empty for a standalone
+installation. The Stack Console reads configured application links from `/links.json`,
+including for callers who receive status-only `/versions.json` responses.
 
 ## Shared host
 

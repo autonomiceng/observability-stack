@@ -14,9 +14,16 @@ docker compose version >/dev/null
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 OB_ALERTS=placeholder python3 scripts/bootstrap.py --env-file "$work/.env" --render-only >/dev/null
+OB_ALERTS=placeholder OB_ACCESS_MODE=proxy OB_TRUSTED_PROXIES=192.0.2.2/32 \
+  OB_GRAFANA_URL=https://darkforge.tail694fe2.ts.net:8447 \
+  python3 scripts/bootstrap.py --env-file "$work/url.env" --render-only >/dev/null
 echo 'env render: PASS'
-for mode in filesystem s3 proxy proxy-s3; do
-  if [ "$mode" = proxy-s3 ]; then
+for mode in filesystem s3 proxy proxy-s3 proxy-url proxy-url-s3; do
+  if [ "$mode" = proxy-url-s3 ]; then
+    docker compose --env-file "$work/url.env" -f compose.yaml -f compose.s3.yaml -f compose.proxy.yaml --profile s3 config --format json > "$work/$mode.json"
+  elif [ "$mode" = proxy-url ]; then
+    docker compose --env-file "$work/url.env" -f compose.yaml -f compose.proxy.yaml config --format json > "$work/$mode.json"
+  elif [ "$mode" = proxy-s3 ]; then
     docker compose --env-file "$work/.env" -f compose.yaml -f compose.s3.yaml -f compose.proxy.yaml --profile s3 config --format json > "$work/$mode.json"
   elif [ "$mode" = proxy ]; then
     docker compose --env-file "$work/.env" -f compose.yaml -f compose.proxy.yaml config --format json > "$work/$mode.json"
@@ -41,6 +48,13 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
     assert 'ob-alloy-otlp' in services['alloy']['networks']['default']['aliases']
     assert {port['target'] for port in services['caddy']['ports']} == ({80} if path.stem.startswith('proxy') else {80, 443})
     assert services['grafana']['environment']['GF_LOG_MODE'] == 'console'
+    explicit_url = path.stem.startswith('proxy-url')
+    assert services['grafana']['environment']['GF_SERVER_ROOT_URL'] == (
+        'https://darkforge.tail694fe2.ts.net:8447/' if explicit_url else 'http://grafana.localhost/')
+    assert services['grafana']['environment']['GF_SERVER_DOMAIN'] == (
+        'darkforge.tail694fe2.ts.net' if explicit_url else 'grafana.localhost')
+    assert services['caddy']['environment']['OB_GRAFANA_AUTHORITY'] == (
+        'darkforge.tail694fe2.ts.net:8447' if explicit_url else '')
     assert services['alloy']['environment']['OB_SCRAPE_EDGE'] == 'false'
     assert services['alloy']['environment']['OB_SCRAPE_GATEWAY'] == 'false'
     unpinned = []
@@ -66,12 +80,19 @@ PY
 echo 'compose config and pins: PASS'
 caddy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["caddy"]["image"])' "$work/filesystem.json")
 alloy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["alloy"]["image"])' "$work/filesystem.json")
-for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'proxy observe.example.com'; do
+for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'proxy observe.example.com' 'proxy darkforge.tail694fe2.ts.net'; do
   # shellcheck disable=SC2086
   set -- $mode
+  url_host=
+  authority=
+  if [ "$2" = darkforge.tail694fe2.ts.net ]; then
+    url_host=$2
+    authority=$2:8447
+  fi
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \
     -e "OB_ACCESS_MODE=$1" -e "OB_PUBLIC_DOMAIN=$2" -e OB_GRAFANA_HOST=grafana.example.com \
     -e OB_TRUSTED_PROXIES=192.0.2.2/32 \
+    -e "OB_GRAFANA_URL_HOST=$url_host" -e "OB_GRAFANA_AUTHORITY=$authority" \
     -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" "$caddy_image" \
     caddy adapt --validate --config /etc/caddy/Caddyfile > "$work/caddy-$1-$2.json"
 done
@@ -87,6 +108,10 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
         assert server['trusted_proxies']['ranges'] == ['192.0.2.2/32']
         assert server['trusted_proxies_strict']
     encoded = json.dumps(config)
+    if path.name == 'caddy-proxy-darkforge.tail694fe2.ts.net.json':
+        assert 'darkforge.tail694fe2.ts.net:8447' in encoded
+        assert 'http.request.hostport' in encoded
+        assert 'grafana:3000' in encoded and '/health/grafana' in encoded
     if path.name.startswith('caddy-public-'):
         assert 'https://observe.example.com' in encoded and '308' in encoded
         assert '/health/grafana' in encoded

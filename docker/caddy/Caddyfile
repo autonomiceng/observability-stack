@@ -36,6 +36,10 @@
 
 (app) {
 	import access-log
+	import app-routes {args[0]}
+}
+
+(app-routes) {
 	encode zstd gzip
 	# Operator surfaces stay on the Docker network; never through the gateway.
 	@operator path_regexp (?i)^/+metrics(/|$)
@@ -105,6 +109,10 @@
 
 (console) {
 	import access-log
+	import console-routes
+}
+
+(console-routes) {
 	import probes
 	handle /links.json {
 		root * /srv/state
@@ -176,10 +184,15 @@
 
 (access-proxy) {
 	:80 {
-		import console
-	}
-	http://{$OB_GRAFANA_HOST} {
-		import app grafana:3000
+		import access-log
+		# Host matchers ignore ports. The external origin must match its full authority.
+		@grafana expression `(host('{$OB_GRAFANA_HOST}') && !host('{$OB_GRAFANA_URL_HOST:unused.invalid}')) || {http.request.hostport} == '{$OB_GRAFANA_AUTHORITY}'`
+		handle @grafana {
+			import app-routes grafana:3000
+		}
+		handle {
+			import console-routes
+		}
 	}
 }
 

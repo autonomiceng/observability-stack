@@ -105,7 +105,52 @@ def check(env_file: Path, origin: str, project: str) -> None:
     print('Smoke Contract: PASS', flush=True)
 
 
+def check_proxy_access(env_file, settings):
+    authority = settings['OB_GRAFANA_AUTHORITY']
+    host = settings['OB_GRAFANA_URL_HOST']
+    port = int(settings['OB_HTTP_PORT'])
+
+    def request(authority, path, authenticated=False):
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+        try:
+            headers = {'Host': authority}
+            if authenticated:
+                _, saved = read_env(env_file)
+                headers['Authorization'] = 'Basic ' + base64.b64encode(
+                    ('admin:' + saved['OB_GRAFANA_ADMIN_PASSWORD']).encode()).decode()
+            connection.request('GET', path, headers=headers)
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    for authority_value in (authority, settings['OB_GRAFANA_HOST']):
+        assert request(authority_value, '/login')[0] == 200
+        assert request(authority_value, '/api/datasources')[0] == 401
+        for path in ('/metrics', '/metrics/', '/METRICS'):
+            assert request(authority_value, path)[0] == 404
+    status, body = request(authority, '/api/frontend/settings', authenticated=True)
+    assert status == 200
+    frontend = json.loads(body)
+    assert frontend['appUrl'] == settings['OB_GRAFANA_URL'] + '/'
+    # The same machine's other ports and bare hostname stay on console routes.
+    for other in (host, host + ':8443', host + ':8445', host + ':443', settings['OB_PUBLIC_DOMAIN']):
+        status, body = request(other, '/')
+        assert status == 200 and b'Observability Stack' in body, other
+        assert request(other, '/login')[0] == 404, other
+        assert request(other, '/health/grafana')[0] == 200, other
+        status, body = request(other, '/links.json')
+        assert status == 200
+        assert json.loads(body) == {'grafana': settings['OB_GRAFANA_URL'],
+                                    'gateway': settings['OB_GATEWAY_URL'],
+                                    'backplane': settings['OB_BACKPLANE_URL']}
+    print('ok: exact external authority, internal Grafana, same-host sibling ports, root health, links, auth and metrics denial', flush=True)
+
+
 def check_access(env_file, settings):
+    if settings['OB_ACCESS_MODE'] == 'proxy':
+        check_proxy_access(env_file, settings)
+        return
     command = ['docker', 'compose', '--env-file', str(env_file)]
     certificate = subprocess.run(command + ['exec', '-T', 'caddy', 'cat',
                                  '/data/caddy/pki/authorities/local/root.crt'],
@@ -139,7 +184,7 @@ def check_access(env_file, settings):
         response.read()
         connection.request('GET', '/links.json', headers={'Host': 'alias-' + marker + '.invalid'})
         response = connection.getresponse()
-        assert json.loads(response.read())['grafana'] == 'http://grafana.localhost:' + settings['OB_HTTP_PORT']
+        assert json.loads(response.read())['grafana'] == bootstrap.grafana_origin(settings)
     finally:
         connection.close()
     container = subprocess.run(command + ['ps', '-q', 'caddy'], check=True, capture_output=True, text=True).stdout.strip()
