@@ -249,9 +249,10 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(self.rows(self.observe())['bootstrap']['state'], 'unknown')
 
     def test_symlinked_checkout_and_env_match_canonical_bootstrap_record(self):
-        link = self.root.parent / (self.root.name + '-checkout')
+        links = tempfile.TemporaryDirectory()
+        self.addCleanup(links.cleanup)
+        link = Path(links.name) / 'checkout'
         link.symlink_to(self.root, target_is_directory=True)
-        self.addCleanup(link.unlink)
         task_record(self.root / 'custom-state', self.root.resolve(), self.env.resolve(),
                     START, 'healthy')
         document = observer.observe(link, link / self.env.name, self.fake, lambda: AT)
