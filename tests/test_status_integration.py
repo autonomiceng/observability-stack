@@ -16,6 +16,7 @@ import bootstrap
 import install_status_timer as installer
 from status_io import Unavailable
 from test_bootstrap import runner_with
+from test_status_timer_retry import FakeManager
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -35,24 +36,27 @@ class StatusIntegrationTests(unittest.TestCase):
         env.touch()
         calls = []
         units = self.root / 'units'
-        installer.install(self.root, env, units, lambda argv, **kw: calls.append(argv))
+        manager = FakeManager(units)
+        calls = manager.calls
+        installer.install(self.root, env, units, manager)
         service = (units / 'observability-status.service').read_text()
         timer = (units / 'observability-status.timer').read_text()
         self.assertIn('Type=oneshot', service)
         self.assertIn('TimeoutStartSec=90', service)
         self.assertIn(str(env), service)
         self.assertIn('OnUnitInactiveSec=30s', timer)
-        self.assertEqual(calls, [['systemctl', '--user', 'daemon-reload'],
-                                 ['systemctl', '--user', 'enable', '--now', 'observability-status.timer']])
-        with self.assertRaises(Unavailable):
-            installer.install(self.root, env, units, lambda *args, **kw: self.fail('reselected'))
+        self.assertEqual(calls[-2:], [['systemctl', '--user', 'is-enabled', 'observability-status.timer'],
+                                    ['systemctl', '--user', 'is-active', 'observability-status.timer']])
+        before = {path: path.stat().st_mtime_ns for path in units.iterdir()}
+        installer.install(self.root, env, units, manager)
+        self.assertEqual(before, {path: path.stat().st_mtime_ns for path in units.iterdir()})
 
     def test_installer_preserves_existing_shared_unit_directory_mode(self):
         env = self.root / 'chosen.env'
         env.touch()
         units = self.root / 'units'
         units.mkdir(mode=0o750)
-        installer.install(self.root, env, units, lambda argv, **kw: None)
+        installer.install(self.root, env, units, FakeManager(units))
         self.assertEqual(units.stat().st_mode & 0o777, 0o750)
 
     def test_installer_canonicalizes_symlinked_checkout_and_env(self):
@@ -63,7 +67,7 @@ class StatusIntegrationTests(unittest.TestCase):
         link = Path(links.name) / 'checkout'
         link.symlink_to(self.root, target_is_directory=True)
         units = self.root / 'units'
-        installer.install(link, link / env.name, units, lambda argv, **kw: None)
+        installer.install(link, link / env.name, units, FakeManager(units))
         service = (units / 'observability-status.service').read_text()
         self.assertIn(str(self.root.resolve() / 'scripts/status_observer.py'), service)
         self.assertIn(str(env.resolve()), service)
@@ -164,11 +168,12 @@ class StatusIntegrationTests(unittest.TestCase):
             if path == installer.NAME + '.timer':
                 raise OSError('injected second write failure')
             return original(path, *args, **kwargs)
-        calls = []
+        manager = FakeManager(unit_dir)
+        calls = manager.calls
         with patch.object(installer.os, 'open', side_effect=opened), self.assertRaises(OSError):
-            installer.install(self.root, env, unit_dir, lambda *args, **kwargs: calls.append(args))
+            installer.install(self.root, env, unit_dir, manager)
         self.assertEqual(list(unit_dir.iterdir()), [])
-        self.assertEqual(calls, [])
+        self.assertFalse(any('enable' in argv for argv in calls))
 
     def test_xdg_relative_and_empty_values_use_home_config(self):
         argv = ['installer', '--checkout', str(self.root), '--env-file', str(self.root / '.env'), '--install']
@@ -199,7 +204,9 @@ class StatusIntegrationTests(unittest.TestCase):
         env = self.root / '.env'
         env.touch()
         unit_dir = self.root / 'units'
+        manager = FakeManager(unit_dir)
+        manager.fail_at = 'enable'
         with self.assertRaises(Unavailable):
-            installer.install(self.root, env, unit_dir, lambda *args, **kwargs: (_ for _ in ()).throw(Unavailable()))
+            installer.install(self.root, env, unit_dir, manager)
         self.assertEqual({path.name for path in unit_dir.iterdir()},
                          {installer.NAME + '.service', installer.NAME + '.timer'})
