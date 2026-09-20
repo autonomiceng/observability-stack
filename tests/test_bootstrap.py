@@ -179,6 +179,13 @@ class BootstrapTests(unittest.TestCase):
         settings = {m.group("key"): bootstrap.unquote(m.group("value")) for m in map(bootstrap.ENV_LINE.match, lines) if m}
         self.assertEqual(settings["OB_STATE_DIR"], "/srv/pg")
 
+    def test_docker_timeout_reports_failure_without_exposing_command_details(self):
+        with patch.object(bootstrap, 'bootstrap', side_effect=subprocess.TimeoutExpired(['private'], 60)), \
+                patch('sys.stderr', new_callable=io.StringIO) as error:
+            self.assertEqual(bootstrap.main(), 3)
+            self.assertEqual(json.loads(error.getvalue())['error'], 'docker_timeout')
+            self.assertNotIn('private', error.getvalue())
+
     def test_network_is_created_only_when_missing(self):
         run = runner_with(network_exists=False)
         bootstrap.ensure_network(run)

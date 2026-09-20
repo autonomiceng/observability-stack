@@ -29,9 +29,12 @@ def check(env_file, settings):
     modes = [('http', int(settings['OB_HTTP_PORT']))]
     context = None
     if settings['OB_ACCESS_MODE'] == 'local':
-        certificate = subprocess.run(['docker', 'compose', '--env-file', str(env_file),
-            'exec', '-T', 'caddy', 'cat', '/data/caddy/pki/authorities/local/root.crt'],
-            check=True, capture_output=True, text=True).stdout
+        try:
+            certificate = subprocess.run(['docker', 'compose', '--env-file', str(env_file),
+                'exec', '-T', 'caddy', 'cat', '/data/caddy/pki/authorities/local/root.crt'],
+                check=True, capture_output=True, text=True, timeout=30).stdout
+        except subprocess.TimeoutExpired:
+            raise AssertionError('public CA retrieval exceeded its deadline') from None
         context = ssl.create_default_context(cadata=certificate)
         modes.append(('https', int(settings['OB_HTTPS_PORT'])))
 

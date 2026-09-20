@@ -131,7 +131,8 @@ Review and update the allowlisted hashes when deliberately changing these config
 
 ## Freshness, size and custody
 
-The document contains nine fixed components, at most 32, and is capped at 64 KiB.
+The document contains nine fixed components; the shared contract permits at most 32 components.
+The complete document is capped at 64 KiB.
 Configuration and component observations have separate 120-second validity windows.
 Each component is dated at the start of its own bounded inspection/probe transaction;
 configuration is dated before its inspection. `generatedAt` only dates assembly.

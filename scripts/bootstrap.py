@@ -59,7 +59,7 @@ class Refused(Exception):
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
-def run(argv: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+def run(argv: list[str], *, timeout: float = 60) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, text=True, capture_output=True, check=False, timeout=timeout)
 
 
@@ -378,7 +378,7 @@ def compose_up(root: Path, env_file: Path, runner: Runner, s3: bool = False, pro
         *(["-f", str(root / "compose.s3.yaml"), "--profile", "s3"] if s3 else []),
         *(["-f", str(root / "compose.proxy.yaml")] if proxy else []),
         "up", "--detach", "--wait", "--wait-timeout", "300",
-    ])
+    ], timeout=900)
     if result.returncode != 0:
         raise Refused("compose_up_failed", (result.stderr or result.stdout).strip()[-2000:])
 
@@ -617,6 +617,9 @@ def main() -> int:
     except Refused as refused:
         print(json.dumps({"error": refused.code, "detail": refused.detail}), file=sys.stderr)
         return 3 if refused.code in ("not_ready", "compose_up_failed") else 1
+    except subprocess.TimeoutExpired:
+        print(json.dumps({"error": "docker_timeout", "detail": "Docker did not finish within the operation deadline; inspect installation state before retrying."}), file=sys.stderr)
+        return 3
     except SystemExit as exit_:  # argparse
         return 2 if exit_.code not in (0, None) else 0
 
