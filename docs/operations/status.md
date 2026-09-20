@@ -60,9 +60,30 @@ timer. The service is `Type=oneshot`, with a 90-second process deadline. The tim
 starts after 10 seconds and uses a 30-second activation interval with one-second
 accuracy. A run exceeding the interval delays the next activation; systemd never
 starts two copies of the same service. A private lock excludes manual concurrent runs.
-Existing units are refused, including a different checkout selection. Inspect and
-explicitly disable/remove the old pair before reinstalling. Unit-installation failure
-may leave written units for private inspection; retry does not overwrite them.
+Replace `--install` with `--check` for a read-only preflight. It checks the user
+manager and accepts an absent pair or the exact generated pair for the same
+selection. It creates no directories, units, env files or private copies. A fresh
+check permits an env file that the owning bootstrap has not created yet.
+Existing units require the original env file.
+
+Unit enumeration can exit nonzero for an absent name. The installer then requires
+`show` to confirm `LoadState=not-found` with empty fragment and drop-in paths.
+An unavailable manager or inconclusive response still refuses before writing.
+
+Both check and install refuse foreign loaded or installed unit fragments, drop-ins,
+partial or malformed pairs, symlinks, hard links, non-private unit files, and unsafe
+unit destinations. Install checks the manager **before** creating a user override.
+Unit names alone never establish ownership. New units are private, and both the
+files and containing directory are fsynced. Existing directory permissions and
+systemd argument quoting are preserved.
+
+Repeat the same `--install` command after an interrupted activation. An exact
+pair is not rewritten. After reload, the installer verifies both loaded fragments
+and absence of drop-ins, then enables the timer and verifies enabled and active
+state. Activation failure retains the pair. A partial pair or different selection
+requires inspection through the owning recovery procedure; the installer never
+disables, deletes or overwrites installed units. Do not change the selection or
+unit files concurrently. Host and disposable acceptance remain separate from these checks.
 
 The user manager must remain active and retain Docker access. Lingering is an operator
 choice; this installer does not change it. Stop observation with
@@ -194,10 +215,10 @@ Primary references: [Grafana health](https://grafana.com/docs/grafana/latest/dev
 [Docker bridge networking](https://docs.docker.com/engine/network/drivers/bridge/).
 
 If unit activation fails after files were written, inspect `systemctl --user status
-observability-status.timer` before retrying. Disable the selected timer and remove
-only the two generated units before reinstalling; partial activation may already
-have started observation. The installer deliberately retains those units for
-inspection and will not overwrite them. A concurrent observer holding this
-installation's lock makes a new invocation a successful no-op.
+observability-status.timer`, then rerun the same `--install` command. Keep the exact
+pair in place: the installer verifies ownership and retries activation without
+rewriting it. Partial or foreign pairs require inspection before further changes.
+Partial activation may already have started observation; a concurrent observer
+holding this installation's lock makes a new invocation a successful no-op.
 
 Docker endpoint agreement is conservative and byte-exact. Use the same Unix socket spelling for `DOCKER_HOST` and the selected context (for example, both `/var/run/docker.sock`); aliases such as `/run/docker.sock` can otherwise produce unknown observations.

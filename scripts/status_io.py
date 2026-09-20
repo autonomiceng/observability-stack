@@ -115,6 +115,9 @@ def directory(path, mode=0o755, *, create=True):
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             except FileNotFoundError:
                 if not create:
+                    info = os.fstat(fd)
+                    if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                        raise Unavailable()
                     raise
                 os.mkdir(part, mode=mode, dir_fd=fd)
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
