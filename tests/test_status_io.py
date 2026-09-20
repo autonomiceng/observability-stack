@@ -19,6 +19,17 @@ class StatusIOTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_deadline_stops_descendant_after_direct_child_exits(self):
+        marker = self.root / 'descendant-heartbeat'
+        child = "import pathlib,time; p=pathlib.Path(" + repr(str(marker)) + "); " + "\nfor i in range(200): p.write_text(str(i)); time.sleep(.02)"
+        parent = "import subprocess,sys; subprocess.Popen([sys.executable, '-c', " + repr(child) + "])"
+        with self.assertRaises(io.Unavailable):
+            io.run([sys.executable, '-c', parent], timeout=.3)
+        self.assertTrue(marker.exists(), 'descendant must execute before the deadline')
+        before = marker.read_text()
+        time.sleep(.15)
+        self.assertEqual(marker.read_text(), before, 'descendant continued after probe cleanup')
+
     def test_public_atomic_mode_and_old_file_survives_replace_failure(self):
         with io.directory(self.root / 'console') as fd:
             mask = os.umask(0o077)
