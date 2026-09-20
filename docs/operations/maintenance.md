@@ -110,3 +110,18 @@ series absent; exporter failures and alert `NoData` require investigation.
 See [capacity and OOM recovery](capacity.md), [disk-full recovery](disk-full.md) and
 [Checkpoint recovery](backup.md). `docker compose down -v` preserves external volumes.
 `scripts/destroy.sh` deletes them only after the operator types the project name.
+
+## Image experiments
+
+Every service accepts a complete `OB_*_IMAGE` reference from `.env` or the shell;
+see `.env.example`. Empty or unset values inherit the digest-pinned defaults in
+`compose.yaml`. `OB_RUSTFS_IMAGE` controls both RustFS and its init service.
+Native `docker compose` applies the overrides directly. Tags and locally built images
+are allowed for unvalidated experiments, including stores. Use a Checkpoint before a
+persistent change; an image switch does not migrate data or change storage-mode rules.
+Run bootstrap after changing references to refresh configured version labels. The console
+reports the effective configuration at bootstrap time; it does not attest running content.
+Shipped-default validation, smoke and recovery gates ignore installation and shell image
+overrides. Renovate continues to update the inline defaults through its native Compose
+manager and existing major/group policies. Checkpoint image requirements are in
+[backup and restore](backup.md).

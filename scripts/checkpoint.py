@@ -38,7 +38,8 @@ def checked(argv, runner=bootstrap.run):
     result = runner(argv)
     if result.returncode:
         # Compose errors can contain interpolated secrets. Do not echo their output.
-        raise RuntimeError(f'{argv[0]} operation failed (exit {result.returncode}); inspect service logs privately')
+        tool = 'docker' if argv[0] == 'env' and 'docker' in argv else argv[0]
+        raise RuntimeError(f'{tool} operation failed (exit {result.returncode}); inspect service logs privately')
     return result.stdout.strip()
 
 
@@ -59,16 +60,28 @@ def inventory(directory):
     return result
 
 
-def image_refs():
-    return [m[1] for m in re.finditer(r'^    image: (\S+)$', (ROOT / 'compose.yaml').read_text(), re.M)]
+def image_repository(ref):
+    name = ref.split('@', 1)[0]
+    if ':' in name.rsplit('/', 1)[-1]:
+        name = name.rsplit(':', 1)[0]
+    return name.removeprefix('docker.io/').removeprefix('index.docker.io/').removeprefix('library/')
 
 
-def manifest(directory, env_file, mode):
+def immutable_ref(ref):
+    if not isinstance(ref, str) or not re.fullmatch(r'[a-z0-9][a-zA-Z0-9./:_-]*@sha256:[0-9a-f]{64}', ref):
+        raise RuntimeError('Checkpoint requires a reproducible immutable image reference')
+    name, digest = ref.split('@')
+    if ':' in name.rsplit('/', 1)[-1]:
+        name = name.rsplit(':', 1)[0]
+    return name + '@' + digest
+
+
+def manifest(directory, env_file, mode, images):
     # Recovery needs the original env through a separate protected channel.
     keys = sorted({m['key'] for m in map(bootstrap.ENV_LINE.match, env_file.read_text().splitlines()) if m})
     return {
-        'version': 1, 'timestamp': datetime.now(timezone.utc).isoformat(),
-        'images': image_refs(), 'env_keys': keys, 'storage_mode': mode, 'fenced': True,
+        'version': 2, 'timestamp': datetime.now(timezone.utc).isoformat(),
+        'images': images, 'imageCustody': 'external', 'env_keys': keys, 'storage_mode': mode, 'fenced': True,
         'artifacts': inventory(directory),
     }
 
@@ -103,14 +116,69 @@ class Stack:
             self.command += ['-f', str(ROOT / 'compose.proxy.yaml')]
         self.config = json.loads(self.dc('config', '--format', 'json'))
         self.project = self.config['name']
-        self.image = self.config['services']['caddy']['image']
+        self.image = None
         self.volumes = VOLUMES + (('rustfs-data',) if self.mode == 's3' else ())
         self.writers = WRITERS + (('rustfs',) if self.mode == 's3' else ())
 
     def dc(self, *args):
-        return checked(self.command + list(args), self.runner)
+        command = self.command + list(args)
+        if args[0] == 'up' and getattr(self, 'image_overrides', None):
+            command = ['env', *[f'{key}={ref}' for key, ref in self.image_overrides.items()], *command]
+        return checked(command, self.runner)
+
+    def resolve_images(self, captured=None):
+        if captured is not None and (not isinstance(captured, dict) or set(captured) != set(self.config['services'])):
+            raise RuntimeError('Checkpoint image service set differs')
+        refs, ids = {}, {}
+        for service, config in self.config['services'].items():
+            ref = config['image']
+            def inspect(reference):
+                probe = self.runner(['docker', 'image', 'inspect', reference])
+                if probe.returncode:
+                    raise RuntimeError(f'{service}: image unavailable locally; pull or load the exact '
+                                       'configured or checkpoint image before capture or restore')
+                return json.loads(probe.stdout)[0]
+            local = inspect(ref)
+            identity = local['Id']
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', identity):
+                raise RuntimeError('invalid local image identity')
+            if captured is not None:
+                try:
+                    immutable_ref(captured[service])
+                except RuntimeError:
+                    raise RuntimeError(f'{service}: Checkpoint manifest records a malformed image reference; '
+                                       'recover an intact manifest with immutable name@sha256 references') from None
+            candidates = ([captured[service]] if captured is not None else [ref] if '@' in ref else
+                sorted(local.get('RepoDigests') or [],
+                       key=lambda value: (image_repository(value) != image_repository(ref), value)))
+            for candidate in candidates:
+                try:
+                    candidate = immutable_ref(candidate)
+                except RuntimeError:
+                    continue
+                verified = inspect(candidate)
+                if verified['Id'] == identity:
+                    refs[service], ids[service] = candidate, identity
+                    break
+            else:
+                if captured is not None:
+                    raise RuntimeError(f'{service}: configured image content differs from the captured '
+                                       'Checkpoint reference; set the matching OB_*_IMAGE to the '
+                                       'reference this Checkpoint recorded for the service')
+                raise RuntimeError(f'{service}: Checkpoint requires locally verified RepoDigests; '
+                                   'publish and pull the exact experiment or select a digest reference before capture')
+        self.images, self.image_ids = refs, ids
+        self.image = ids.get('caddy')
+        # Keep resume/restore on the attested content even if a tag moves afterward.
+        self.image_overrides = {
+            'OB_' + service.removesuffix('-init').upper() + '_IMAGE': ref
+            for service, ref in refs.items()
+            if '@' not in self.config['services'][service]['image']
+        }
 
     def helper(self, mounts, script, *args, network='none', timeout=None):
+        if self.image is None:
+            self.resolve_images()
         deadline = time.monotonic() + timeout if timeout is not None else None
         token = uuid.uuid4().hex
         name = f'{self.project}-checkpoint-{token}'
@@ -129,7 +197,7 @@ class Stack:
             # Finish create before honoring interruption so cleanup owns a known container.
             for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
                 handlers[signum] = signal.signal(signum, defer)
-            checked(['docker', 'create', '--name', name, '--label', f'{label}={token}',
+            checked(['docker', 'create', '--pull', 'never', '--name', name, '--label', f'{label}={token}',
                      '--network', network, '--user', '0', *mounts, '--entrypoint', 'sh', self.image,
                      '-ec', script, 'sh', *args], runner)
             for signum, handler in handlers.items():
@@ -252,6 +320,7 @@ class Stack:
         return self.config['volumes'][key]['name']
 
     def attest_capture(self):
+        self.resolve_images()
         ids = self.dc('ps', '-q', *self.writers).split()
         if not ids:
             raise RuntimeError('backup requires the complete stack running')
@@ -264,8 +333,8 @@ class Stack:
                 raise RuntimeError('backup container ownership differs from resolved Compose')
             services.append(service)
             expected = self.config['services'][service]
-            if container['Config']['Image'] != expected['image']:
-                raise RuntimeError('backup requires the checkout pins matching the running services')
+            if container['Image'] != self.image_ids[service]:
+                raise RuntimeError('backup requires configured image identity matching the running services')
             mounts = set()
             for mount in expected.get('volumes', []):
                 kind = mount['type']
@@ -318,7 +387,7 @@ class Stack:
                 raise RuntimeError(f'restore refused: non-empty or unreadable volume {name}') from error
 
     def start(self):
-        bootstrap.write_versions(ROOT, ROOT / 'compose.yaml', self.settings)
+        bootstrap.write_versions(ROOT, ROOT / 'compose.yaml', self.settings, services=self.config['services'])
         (self.state / 'textfile').mkdir(parents=True, exist_ok=True)
         bootstrap.write_provisioning(ROOT, self.state, self.settings)
         bootstrap.ensure_volumes(self.runner, self.settings.get('OB_VOLUME_PREFIX') or bootstrap.PROJECT,
@@ -439,6 +508,8 @@ def backup(stack, timeout=120, sleep=time.sleep):
     if not marker.is_file() or marker.read_text().strip() != stack.mode:
         raise RuntimeError('storage-mode marker is missing or differs from .env')
     stack.attest_capture()
+    if any('@' not in service['image'] for service in stack.config['services'].values()):
+        print('Image custody is external: retain the recorded immutable references in a registry or a tested off-host image archive; publication was not checked.', file=sys.stderr, flush=True)
     destination = stack.backups / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     destination.mkdir(mode=0o700)
     stopped = []
@@ -477,7 +548,7 @@ def backup(stack, timeout=120, sleep=time.sleep):
         for service in stack.writers:
             stack.stopped_cleanly(service)
         stack.check_capture_volumes()
-        doc = manifest(destination, stack.env_file, stack.mode)
+        doc = manifest(destination, stack.env_file, stack.mode, stack.images)
         for path in destination.rglob('*'):
             if path.is_file():
                 with path.open('rb') as handle:
@@ -532,7 +603,7 @@ def backup(stack, timeout=120, sleep=time.sleep):
 
 def verify_checkpoint(stack, source):
     doc = json.loads((source / 'manifest.json').read_text())
-    if (doc['version'] != 1 or doc['images'] != image_refs() or not doc['fenced']
+    if (doc['version'] not in (1, 2) or not doc['fenced']
             or doc['storage_mode'] != stack.mode):
         raise RuntimeError('Checkpoint format, pins, fence or storage mode differs')
     if doc['artifacts'] != inventory(source):
@@ -542,6 +613,13 @@ def verify_checkpoint(stack, source):
     for path in configuration_files():
         if path.read_bytes() != (source / 'configuration' / path.relative_to(ROOT)).read_bytes():
             raise RuntimeError('restore requires the matching configuration checkout')
+    captured = doc['images']
+    if doc['version'] == 1:
+        defaults = bootstrap.images(ROOT / 'compose.yaml')
+        if captured != list(defaults.values()):
+            raise RuntimeError('Checkpoint legacy image pins differ')
+        captured = {name: defaults[name] for name in stack.config['services']}
+    stack.resolve_images(captured)
     verify_archives(source, stack.volumes)
     lines, _ = bootstrap.read_env(stack.env_file)
     present = {match['key'] for match in map(bootstrap.ENV_LINE.match, lines) if match}
@@ -576,6 +654,10 @@ def restore(stack, source):
     installation = stack.state / 'installation'
     installation.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source / 'installation', installation, dirs_exist_ok=True)
+    if stack.image_overrides:
+        print('Retain these verified image overrides in the installation .env before the next Compose update:', flush=True)
+        for key, ref in sorted(stack.image_overrides.items()):
+            print(f'{key}={ref}', flush=True)
     stack.start()
     print('Restore complete; all five readiness probes passed', flush=True)
 
@@ -611,6 +693,7 @@ def cli():
     except bootstrap.Refused as error:
         # Refused.detail can contain raw Docker output or interpolated settings.
         details = {
+            'image_default_unrecognized': 'compose.yaml has an image default this tooling cannot parse',
             'env_repair_required': 'repair managed keys in the original .env',
             'alert_delivery_invalid': 'check alert delivery settings in the original .env',
             'alert_delivery_required': 'configure alert delivery or explicitly select OB_ALERTS=placeholder',

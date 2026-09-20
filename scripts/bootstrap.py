@@ -137,7 +137,7 @@ def installation_state(root: Path, data_dir: Path, runner: Runner, project: str 
 
 
 def images(compose: Path) -> dict[str, str]:
-    """Service name to image tag, read from compose.yaml without a YAML parser."""
+    """Shipped service references only; ignores env files and the shell."""
     out: dict[str, str] = {}
     service = ""
     for line in compose.read_text(encoding="utf-8").splitlines():
@@ -146,18 +146,31 @@ def images(compose: Path) -> dict[str, str]:
             service = head.group("name")
         match = IMAGE_LINE.match(line)
         if match and service:
-            ref = match.group("ref").split("@", 1)[0]
-            out[service] = ref.rsplit(":", 1)[-1]
+            ref = match.group("ref")
+            fallback = re.fullmatch(r"\$\{OB_[A-Z0-9_]+_IMAGE:-(.+)\}", ref)
+            out[service] = fallback[1] if fallback else ref
+            if '${' in out[service]:
+                raise Refused('image_default_unrecognized', service)
     return out
 
 
-def write_versions(root: Path, compose: Path, settings: dict[str, str] | None = None) -> None:
+def write_versions(root: Path, compose: Path, settings: dict[str, str] | None = None, *, services: dict) -> None:
     state = Path((settings or {}).get("OB_STATE_DIR", str(root / "data")))
     console = (state if state.is_absolute() else root / state) / "console"
     console.mkdir(parents=True, exist_ok=True)
-    tags = images(compose)
+    tags = {}
+    for service in images(compose):
+        ref = services.get(service, {}).get("image", "")
+        # Publish only version labels from valid references, never the resolved environment.
+        if not re.fullmatch(r"[a-z0-9][a-z0-9./:_-]*(?:@[a-z0-9]+:[0-9a-f]+)?", ref, re.I):
+            tags[service] = "unknown"
+        else:
+            name, _, digest = ref.partition("@")
+            leaf = name.rsplit("/", 1)[-1]
+            tags[service] = leaf.split(":", 1)[1] if ":" in leaf else (digest or "latest")
     doc = {
         "pinnedAt": datetime.fromtimestamp(compose.stat().st_mtime, timezone.utc).isoformat(),
+        "configuredAt": datetime.now(timezone.utc).isoformat(),
         "images": tags,
         "links": {
             "gateway": (settings or {}).get("OB_GATEWAY_URL", ""),
@@ -531,7 +544,14 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         if not backup_dir.is_absolute():
             backup_dir = root / backup_dir
         backup_dir.mkdir(parents=True, exist_ok=True)
-        write_versions(root, compose, settings)
+        resolved = runner(["docker", "compose", "--project-directory", str(root),
+                           "--env-file", str(env_file), "-f", str(compose),
+                           *(["-f", str(root / "compose.s3.yaml"), "--profile", "s3"] if s3 else []),
+                           *(["-f", str(root / "compose.proxy.yaml")] if proxy else []),
+                           "config", "--format", "json"])
+        if resolved.returncode:
+            raise Refused("compose_config_failed", "inspect Compose configuration privately")
+        write_versions(root, compose, settings, services=json.loads(resolved.stdout)["services"])
         delivery = write_provisioning(root, state_dir, settings)
 
         ensure_network(runner, settings.get("OB_PLATFORM_NETWORK", NETWORK))

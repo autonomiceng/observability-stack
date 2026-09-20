@@ -56,7 +56,7 @@ def profile_settings(profile):
             'COMPOSE_FILE': 'compose.yaml:compose.s3.yaml' if profile == 's3' else 'compose.yaml'}
 
 
-def cleanup(command, project, network, network_created, work, succeeded):
+def cleanup(command, project, network, network_created, work, succeeded, image_tag=None):
     failed = False
     def attempt(argv, action):
         nonlocal failed
@@ -81,6 +81,8 @@ def cleanup(command, project, network, network_created, work, succeeded):
             attempt(['docker', 'volume', 'rm', name], 'remove ' + name)
     if network_created:
         attempt(['docker', 'network', 'rm', network], 'remove network ' + network)
+    if image_tag:
+        attempt(['docker', 'image', 'rm', image_tag], 'remove owned image tag')
     if succeeded and not failed:
         try:
             shutil.rmtree(work)
@@ -122,6 +124,9 @@ def main():
     network = project + '-platform'
     if checkpoint.bootstrap.run(['docker', 'network', 'inspect', network]).returncode == 0:
         raise RuntimeError('drill network already exists; refusing to touch it')
+    image_tag = project + '-loki:drill'
+    if checkpoint.bootstrap.run(['docker', 'image', 'inspect', image_tag]).returncode == 0:
+        raise RuntimeError(f'drill image tag already exists; after confirming no drill is running, remove only {image_tag} with docker image rm')
     work = Path(tempfile.mkdtemp(prefix='observability-drill-'))
     work.chmod(0o755)
     root = prepare_checkout(root, work / 'checkout')
@@ -133,6 +138,7 @@ def main():
         'OB_PLATFORM_NETWORK': network, 'OB_STATE_DIR': str(work / 'data'),
         'OB_BACKUP_DIR': str(work / 'backups'), 'OB_SCRAPE_GATEWAY': 'false',
         'OB_VOLUME_PREFIX': project, 'OB_ALERTS': 'placeholder', 'OB_OPERATOR_ALLOW': 'private_ranges',
+        'OB_LOKI_IMAGE': image_tag,
     }
     text = (root / '.env.example').read_text()
     for key, value in settings.items():
@@ -140,12 +146,18 @@ def main():
     env_file.write_text(text)
     env_file.chmod(0o600)
     network_created = False
+    image_created = False
     succeeded = False
     command = ['docker', 'compose', '--project-directory', str(root), '-f', str(root / 'compose.yaml'),
                '--env-file', str(env_file)]
     if profile == 's3':
         command += ['-f', str(root / 'compose.s3.yaml'), '--profile', 's3']
     try:
+        pinned_loki = checkpoint.bootstrap.images(root / 'compose.yaml')['loki']
+        if checkpoint.bootstrap.run(['docker', 'image', 'inspect', pinned_loki]).returncode:
+            run(['docker', 'pull', pinned_loki])
+        run(['docker', 'tag', pinned_loki, image_tag])
+        image_created = True
         run(['docker', 'network', 'create', network])
         network_created = True
         run(['python3', str(root / 'scripts/bootstrap.py'), '--env-file', str(env_file)])
@@ -179,7 +191,8 @@ def main():
               f'RTO={time.monotonic() - started:.1f}s', flush=True)
         succeeded = True
     finally:
-        cleanup_failed = cleanup(command, project, network, network_created, work, succeeded)
+        cleanup_failed = cleanup(command, project, network, network_created, work, succeeded,
+                                 image_tag if image_created else None)
         if succeeded and cleanup_failed:
             raise RuntimeError('drill cleanup failed; inspect retained artifacts')
 
@@ -192,6 +205,6 @@ if __name__ == '__main__':
     signal.signal(signal.SIGHUP, interrupted)
     try:
         main()
-    except (RuntimeError, OSError, ValueError, KeyError, StopIteration, KeyboardInterrupt) as error:
+    except (RuntimeError, OSError, ValueError, KeyError, StopIteration, KeyboardInterrupt, checkpoint.bootstrap.Refused) as error:
         print(f'FAIL: {error}', file=sys.stderr)
         sys.exit(1)

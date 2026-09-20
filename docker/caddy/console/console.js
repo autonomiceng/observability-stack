@@ -1,4 +1,4 @@
-// Stack Console. Reads /versions.json (pinned images, written at bootstrap) and
+// Stack Console. Reads /versions.json (configured versions, written at bootstrap) and
 // polls /health/<service> through the Stack Gateway. No secrets, no writes.
 (() => {
   const base = `${location.protocol}//${location.host}`;
@@ -72,8 +72,8 @@
         el.textContent = v.images?.[el.dataset.version] ?? "unknown";
       }
       const when = document.querySelector("[data-pinned]");
-      when.dateTime = v.pinnedAt ?? "";
-      when.textContent = v.pinnedAt ? new Date(v.pinnedAt).toLocaleDateString() : "unknown";
+      when.dateTime = v.configuredAt ?? "";
+      when.textContent = v.configuredAt ? new Date(v.configuredAt).toLocaleString() : "unknown";
     } catch {
       for (const el of document.querySelectorAll("[data-version]")) el.textContent = "unknown";
       document.querySelector("[data-pinned]").textContent = "unknown";

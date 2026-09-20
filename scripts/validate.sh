@@ -3,6 +3,11 @@
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
+# Shipped-default gates ignore installation and caller overrides.
+unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES
+for key in $(env | sed -n 's/^\(OB_[A-Z0-9_]*\)=.*/\1/p'); do
+  unset "$key"
+done
 for tool in docker python3 shellcheck; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
@@ -77,7 +82,34 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
     assert set(services) == expected, f'{path}: unexpected services'
     assert services['tempo'].get('stop_grace_period') == '45s', 'Tempo stop grace'
 PY
+python3 - <<'PY_IMAGES'
+import re
+from pathlib import Path
+lines = [line.strip() for line in Path('compose.yaml').read_text().splitlines() if line.strip().startswith('image:')]
+assert len(lines) == 8
+assert all(re.fullmatch(r'image: \$\{OB_[A-Z0-9_]+_IMAGE:-[^\s{}]+:[^\s:@]+@sha256:[0-9a-f]{64}\}', line) for line in lines), 'Renovate-readable image defaults'
+PY_IMAGES
 echo 'compose config and pins: PASS'
+python3 - "$work" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+work = Path(sys.argv[1])
+original = (work / '.env').read_text()
+for mode in ('filesystem', 's3'):
+    defaults = {name: service['image'] for name, service in
+                json.loads((work / (mode + '.json')).read_text())['services'].items()}
+    command = ['docker', 'compose', '--env-file', str(work / 'images.env'), '-f', 'compose.yaml']
+    if mode == 's3':
+        command += ['-f', 'compose.s3.yaml', '--profile', 's3']
+    for value in ('registry.example:5000/team/image:trial', 'local-experiment:dev', ''):
+        keys = {'OB_' + name.removesuffix('-init').upper() + '_IMAGE' for name in defaults}
+        (work / 'images.env').write_text(original + '\n' + ''.join(key + '=' + value + '\n' for key in sorted(keys)))
+        result = subprocess.run(command + ['config', '--format', 'json'], capture_output=True, text=True)
+        assert result.returncode == 0, 'image override configuration failed'
+        actual = {name: service['image'] for name, service in json.loads(result.stdout)['services'].items()}
+        assert actual == {name: value or ref for name, ref in defaults.items()}, (mode, value)
+print('native image overrides: PASS (6 filesystem/S3 cases)')
+PY
 caddy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["caddy"]["image"])' "$work/filesystem.json")
 alloy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["alloy"]["image"])' "$work/filesystem.json")
 for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'proxy observe.example.com' 'proxy darkforge.tail694fe2.ts.net'; do

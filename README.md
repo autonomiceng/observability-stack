@@ -55,7 +55,9 @@ Local mode offers HTTP and self-signed HTTPS. It does not force HTTP visitors on
 | Tempo | Traces, 7 days | volume |
 | RustFS (optional) | S3 backend for the three stores | volume |
 
-Every image is pinned as `tag@sha256` in `compose.yaml`. Renovate opens the bump; a human merges it after the smoke test passes.
+Default images are pinned as `tag@sha256` in `compose.yaml`.
+Set a complete `OB_*_IMAGE` reference in `.env` for an operator experiment;
+see [image experiments](docs/operations/maintenance.md#image-experiments). Renovate opens the bump; a human merges it after the smoke test passes.
 
 ## Built on
 

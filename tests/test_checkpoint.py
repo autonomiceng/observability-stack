@@ -17,8 +17,56 @@ import checkpoint
 import destroy
 from types import SimpleNamespace
 
+PIN = 'example/loki@sha256:' + 'a' * 64
+IMAGE_ID = 'sha256:' + 'b' * 64
+
+
+def image_result(argv):
+    return subprocess.CompletedProcess(argv, 0, json.dumps([{'Id': IMAGE_ID, 'RepoDigests': [PIN]}]), '')
+
 
 class CheckpointTests(unittest.TestCase):
+    def test_image_preflight_names_the_service_and_remedy_without_diagnostics(self):
+        stack = object.__new__(checkpoint.Stack)
+        stack.config = {'services': {'loki': {'image': 'private.example/loki:trial'}}}
+        for failure in ('configured', 'digest'):
+            with self.subTest(failure=failure):
+                def runner(argv):
+                    if failure == 'configured' or '@' in argv[-1]:
+                        return subprocess.CompletedProcess(argv, 1, '', 'private-credential')
+                    return image_result(argv)
+                stack.runner = runner
+                with self.assertRaisesRegex(RuntimeError, 'loki: image unavailable locally; pull or load') as error:
+                    stack.resolve_images()
+                self.assertNotIn('private', str(error.exception))
+
+    def test_restore_uses_the_captured_reference_despite_a_different_local_digest_set(self):
+        stack = object.__new__(checkpoint.Stack)
+        stack.config = {'services': {'loki': {'image': 'local:restored'}}}
+        calls = []
+        def runner(argv):
+            calls.append(argv[-1])
+            return subprocess.CompletedProcess(argv, 0, json.dumps([
+                {'Id': IMAGE_ID, 'RepoDigests': ['other/repository@sha256:' + 'c' * 64]}]), '')
+        stack.runner = runner
+        stack.resolve_images({'loki': PIN})
+        self.assertEqual(calls, ['local:restored', PIN])
+        self.assertEqual(stack.images, {'loki': PIN})
+        self.assertEqual(stack.image_overrides, {'OB_LOKI_IMAGE': PIN})
+        stack.config['services']['loki']['image'] = PIN
+        stack.resolve_images({'loki': PIN})
+        self.assertEqual(stack.image_overrides, {})
+
+    def test_capture_prefers_the_configured_registry_with_a_port(self):
+        stack = object.__new__(checkpoint.Stack)
+        reference = 'registry.example:5000/store:trial'
+        expected = 'registry.example:5000/store@sha256:' + 'a' * 64
+        stack.config = {'services': {'loki': {'image': reference}}}
+        stack.runner = lambda argv: subprocess.CompletedProcess(argv, 0, json.dumps([
+            {'Id': IMAGE_ID, 'RepoDigests': [PIN, expected]}]), '')
+        stack.resolve_images()
+        self.assertEqual(stack.images, {'loki': expected})
+
     def test_manifest_has_keys_pins_checksums_and_no_env_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -27,11 +75,23 @@ class CheckpointTests(unittest.TestCase):
             destination = root / 'checkpoint'
             destination.mkdir()
             (destination / 'grafana-data.tar').write_bytes(b'fixture')
-            doc = checkpoint.manifest(destination, env, 'filesystem')
+            stack = object.__new__(checkpoint.Stack)
+            stack.config = {'services': {'caddy': {'image': 'local:experiment'},
+                                         'loki': {'image': 'registry/loki:experiment'}}}
+            stack.runner = image_result
+            stack.resolve_images()
+            self.assertEqual(stack.image, IMAGE_ID)
+            calls = []
+            stack.command = ['docker', 'compose']
+            stack.runner = lambda argv: (calls.append(argv) or subprocess.CompletedProcess(argv, 0, '', ''))
+            stack.dc('up', '-d')
+            self.assertIn('OB_LOKI_IMAGE=' + PIN, calls[0])
+            doc = checkpoint.manifest(destination, env, 'filesystem', stack.images)
             self.assertEqual(doc['env_keys'], ['OB_GRAFANA_ADMIN_PASSWORD', 'OB_S3_SECRET_KEY'])
             self.assertNotIn('never-print-this-secret', json.dumps(doc))
             self.assertNotIn('another-secret', json.dumps(doc))
-            self.assertTrue(all('@sha256:' in ref for ref in doc['images']))
+            self.assertTrue(all('@sha256:' in ref for ref in doc['images'].values()))
+            self.assertEqual(doc['images'], {'caddy': PIN, 'loki': PIN})
             self.assertEqual(doc['artifacts']['grafana-data.tar']['size'], 7)
             self.assertEqual(len(doc['artifacts']['grafana-data.tar']['sha256']), 64)
 
@@ -139,15 +199,22 @@ class BackupAttestationTests(unittest.TestCase):
                 {'type': 'volume', 'source': 'loki-data', 'target': '/loki'},
                 {'type': 'bind', 'source': '/config', 'target': '/etc/loki', 'read_only': True}]}},
             'volumes': {'loki-data': {'name': 'test_loki-data'}}}
-        self.container = {'Id': 'id', 'Config': {'Image': 'pinned', 'Labels': {
+        self.container = {'Id': 'id', 'Image': IMAGE_ID, 'Config': {'Image': 'pinned', 'Labels': {
             'com.docker.compose.service': 'loki', 'com.docker.compose.project': 'test'}},
             'Mounts': [{'Type': 'volume', 'Name': 'test_loki-data', 'Destination': '/loki', 'RW': True},
                        {'Type': 'bind', 'Source': '/config', 'Destination': '/etc/loki', 'RW': False}]}
         self.calls, self.stopped = [], False
         self.missing_volume, self.foreign_consumer = False, False
         self.restart_error = False
+        self.repo_digests = [PIN]
+        self.digest_id = IMAGE_ID
         def runner(argv):
             self.calls.append(argv)
+            if argv[0] == 'env':
+                argv = argv[argv.index('docker'):]
+            if argv[:3] == ['docker', 'image', 'inspect']:
+                return subprocess.CompletedProcess(argv, 0, json.dumps([
+                    {'Id': self.digest_id if '@' in argv[-1] else IMAGE_ID, 'RepoDigests': self.repo_digests}]), '')
             output, code = '', 0
             if argv[:3] == ['docker', 'volume', 'inspect']:
                 code = int(self.missing_volume)
@@ -192,9 +259,11 @@ class BackupAttestationTests(unittest.TestCase):
     def test_changed_live_mounts_or_pins_refused_before_capture(self):
         import copy
         original = copy.deepcopy(self.container)
-        for change in ('prefix', 'bind', 'readonly', 'extra', 'image'):
+        for change in ('prefix', 'bind', 'readonly', 'extra', 'image', 'local-only', 'unverified'):
             with self.subTest(change=change):
                 self.container = copy.deepcopy(original)
+                self.repo_digests = [PIN]
+                self.digest_id = IMAGE_ID
                 if change == 'prefix':
                     self.container['Mounts'][0]['Name'] = 'old_loki-data'
                 elif change == 'bind':
@@ -204,9 +273,13 @@ class BackupAttestationTests(unittest.TestCase):
                 elif change == 'extra':
                     self.container['Mounts'].append({'Type': 'volume', 'Name': 'unarchived',
                                                      'Destination': '/extra', 'RW': True})
+                elif change == 'image':
+                    self.container['Image'] = 'sha256:' + 'c' * 64
+                elif change == 'unverified':
+                    self.digest_id = 'sha256:' + 'd' * 64
                 else:
-                    self.container['Config']['Image'] = 'old-pin'
-                self.assert_refused_before_capture('mount|pins')
+                    self.repo_digests = []
+                self.assert_refused_before_capture('mount|identity|RepoDigests')
 
     def test_absent_source_volume_never_created_by_archive_helper(self):
         self.missing_volume = True
@@ -288,6 +361,7 @@ class BackupAttestationTests(unittest.TestCase):
     def tempo_fence(self, metrics):
         stack = self.stack
         stack.writers = checkpoint.WRITERS + ('rustfs',)
+        stack.images = {'loki': PIN}
         stack.attest_capture = lambda: None
         stack.check_capture_volumes = lambda: None
         stack.image = 'pinned-helper'
@@ -741,15 +815,21 @@ class CheckpointVerificationTests(unittest.TestCase):
         self.stack.volumes, self.stack.settings = ('loki-data',), {'OB_ALERTS': 'placeholder'}
         self.stack.project, self.stack.state = 'recovery-test', self.root / 'state'
         self.stack.image = 'helper'
-        self.stack.config = {'volumes': {'loki-data': {'name': 'recovery-test_loki-data'}}}
+        self.stack.config = {'services': {'loki': {'image': PIN}},
+                             'volumes': {'loki-data': {'name': 'recovery-test_loki-data'}}}
+        def inspect(argv):
+            if argv[-1].endswith('c' * 64):
+                return subprocess.CompletedProcess(argv, 0, json.dumps([{'Id': 'sha256:' + 'c' * 64}]), '')
+            return image_result(argv)
+        self.stack.runner = inspect
         self.publish(self.source)
 
     def publish(self, source):
-        (source / 'manifest.json').write_text(json.dumps(checkpoint.manifest(source, self.env, 'filesystem')))
+        (source / 'manifest.json').write_text(json.dumps(checkpoint.manifest(source, self.env, 'filesystem', {'loki': PIN})))
 
     def test_verify_checkpoint_rejects_corruption_extra_files_symlinks_pins_and_config(self):
         checkpoint.verify_checkpoint(self.stack, self.source)
-        for defect in ('hash', 'extra', 'symlink', 'pins', 'config'):
+        for defect in ('hash', 'extra', 'symlink', 'pins', 'identity', 'mutable', 'non-string', 'config'):
             with self.subTest(defect=defect):
                 source = self.root / defect
                 shutil.copytree(self.source, source)
@@ -759,15 +839,36 @@ class CheckpointVerificationTests(unittest.TestCase):
                     (source / 'extra').write_text('unexpected')
                 elif defect == 'symlink':
                     (source / 'extra').symlink_to(self.env)
-                elif defect == 'pins':
+                elif defect in ('pins', 'identity', 'mutable', 'non-string'):
                     doc = json.loads((source / 'manifest.json').read_text())
-                    doc['images'] = ['different-pin']
+                    doc['images'] = {'loki': PIN.replace('a' * 64, 'c' * 64)} if defect == 'identity' else (
+                        {'loki': 'example/loki:mutable'} if defect == 'mutable' else
+                        {'loki': 123} if defect == 'non-string' else ['different-pin'])
                     (source / 'manifest.json').write_text(json.dumps(doc))
                 else:
                     (source / 'configuration/config.alloy').write_text('different config')
                     self.publish(source)
-                with self.assertRaises(RuntimeError):
-                    checkpoint.verify_checkpoint(self.stack, source)
+                self.stack.check_empty = Mock()
+                message = ('malformed image reference' if defect in ('mutable', 'non-string') else
+                           'configured image content differs' if defect == 'identity' else '.')
+                with self.assertRaisesRegex(RuntimeError, message):
+                    checkpoint.restore(self.stack, source)
+                self.stack.check_empty.assert_not_called()
+                self.assertFalse(self.stack.state.exists())
+        self.stack.config['services']['loki']['image'] = 'example/loki:equivalent-tag'
+        checkpoint.verify_checkpoint(self.stack, self.source)
+        legacy = self.root / 'legacy'
+        shutil.copytree(self.source, legacy)
+        defaults = checkpoint.bootstrap.images(self.checkout / 'compose.yaml')
+        for path in (self.checkout / 'compose.yaml', legacy / 'configuration/compose.yaml'):
+            path.write_text(checkpoint.re.sub(r'\$\{OB_[A-Z]+_IMAGE:-(.+?)\}', r'\1', path.read_text()))
+        self.stack.config['services']['loki']['image'] = defaults['loki']
+        doc = checkpoint.manifest(legacy, self.env, 'filesystem', list(defaults.values()))
+        doc['version'] = 1
+        (legacy / 'manifest.json').write_text(json.dumps(doc))
+        checkpoint.verify_checkpoint(self.stack, legacy)
+        shutil.copy2(self.source / 'configuration/compose.yaml', self.checkout / 'compose.yaml')
+        self.stack.config['services']['loki']['image'] = PIN
         self.env.write_text(self.env.read_text().replace('OB_CAPTURED_OPTIONAL=private-value\n', ''))
         with contextlib.redirect_stderr(io.StringIO()) as diagnostic:
             checkpoint.verify_checkpoint(self.stack, self.source)
@@ -791,6 +892,8 @@ class CheckpointVerificationTests(unittest.TestCase):
         volume = self.root / 'target-volume'
         volume.mkdir()
         def runner(argv):
+            if argv[:3] == ['docker', 'image', 'inspect']:
+                return image_result(argv)
             if argv[:3] == ['docker', 'volume', 'ls']:
                 output = 'recovery-test_loki-data'
             elif argv[:2] == ['docker', 'ps']:

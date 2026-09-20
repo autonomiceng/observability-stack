@@ -94,7 +94,7 @@ sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
 chmod 600 "$env_file"
 docker network create "$network" >/dev/null
 trap cleanup EXIT HUP INT TERM
-image=$(sed -n 's/^    image: \(caddy:[^ ]*\)$/\1/p' compose.yaml)
+image=$(python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "scripts"); import bootstrap; print(bootstrap.images(Path("compose.yaml"))["caddy"])')
 producer=$(docker run -d --network none --log-driver=journald --log-opt cache-disabled=true \
   --entrypoint sh "$image" -c 'echo independent-stdout; echo independent-stderr >&2')
 docker wait "$producer" >/dev/null

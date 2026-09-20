@@ -97,6 +97,9 @@ all five own upstreams. Mimir and Tempo are distroless, so backend readiness is 
 HTTP from Caddy rather than by installing another executable in their containers. The smoke
 contract checks each endpoint as well as container state.
 
+Compose retains tested digest defaults and accepts complete `OB_*_IMAGE` references from `.env`.
+Checkpoint tools verify effective content identity before capturing or restoring experiments.
+
 Bootstrap follows the gateway's lock, secret-preservation and existing-data refusal contract.
 It creates the platform network, starts Compose with `--wait`, then probes ingress readiness.
 Smoke uses separate volumes, network, console state, ports and generated credentials and
