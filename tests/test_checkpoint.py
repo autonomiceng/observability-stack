@@ -40,6 +40,23 @@ class CheckpointTests(unittest.TestCase):
                     stack.resolve_images()
                 self.assertNotIn('private', str(error.exception))
 
+    def test_restore_uses_the_captured_reference_despite_a_different_local_digest_set(self):
+        stack = object.__new__(checkpoint.Stack)
+        stack.config = {'services': {'loki': {'image': 'local:restored'}}}
+        calls = []
+        def runner(argv):
+            calls.append(argv[-1])
+            return subprocess.CompletedProcess(argv, 0, json.dumps([
+                {'Id': IMAGE_ID, 'RepoDigests': ['other/repository@sha256:' + 'c' * 64]}]), '')
+        stack.runner = runner
+        stack.resolve_images({'loki': PIN})
+        self.assertEqual(calls, ['local:restored', PIN])
+        self.assertEqual(stack.images, {'loki': PIN})
+        self.assertEqual(stack.image_overrides, {'OB_LOKI_IMAGE': PIN})
+        stack.config['services']['loki']['image'] = PIN
+        stack.resolve_images({'loki': PIN})
+        self.assertEqual(stack.image_overrides, {})
+
     def test_capture_prefers_the_configured_registry_with_a_port(self):
         stack = object.__new__(checkpoint.Stack)
         reference = 'registry.example:5000/store:trial'
@@ -800,7 +817,11 @@ class CheckpointVerificationTests(unittest.TestCase):
         self.stack.image = 'helper'
         self.stack.config = {'services': {'loki': {'image': PIN}},
                              'volumes': {'loki-data': {'name': 'recovery-test_loki-data'}}}
-        self.stack.runner = image_result
+        def inspect(argv):
+            if argv[-1].endswith('c' * 64):
+                return subprocess.CompletedProcess(argv, 0, json.dumps([{'Id': 'sha256:' + 'c' * 64}]), '')
+            return image_result(argv)
+        self.stack.runner = inspect
         self.publish(self.source)
 
     def publish(self, source):

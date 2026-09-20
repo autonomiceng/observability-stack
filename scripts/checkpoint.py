@@ -81,7 +81,7 @@ def manifest(directory, env_file, mode, images):
     keys = sorted({m['key'] for m in map(bootstrap.ENV_LINE.match, env_file.read_text().splitlines()) if m})
     return {
         'version': 2, 'timestamp': datetime.now(timezone.utc).isoformat(),
-        'images': images, 'env_keys': keys, 'storage_mode': mode, 'fenced': True,
+        'images': images, 'imageCustody': 'external', 'env_keys': keys, 'storage_mode': mode, 'fenced': True,
         'artifacts': inventory(directory),
     }
 
@@ -126,7 +126,9 @@ class Stack:
             command = ['env', *[f'{key}={ref}' for key, ref in self.image_overrides.items()], *command]
         return checked(command, self.runner)
 
-    def resolve_images(self):
+    def resolve_images(self, captured=None):
+        if captured is not None and (not isinstance(captured, dict) or set(captured) != set(self.config['services'])):
+            raise RuntimeError('Checkpoint image service set differs')
         refs, ids = {}, {}
         for service, config in self.config['services'].items():
             ref = config['image']
@@ -140,8 +142,9 @@ class Stack:
             identity = local['Id']
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', identity):
                 raise RuntimeError('invalid local image identity')
-            candidates = [ref] if '@' in ref else sorted(local.get('RepoDigests') or [],
-                key=lambda value: (image_repository(value) != image_repository(ref), value))
+            candidates = ([captured[service]] if captured is not None else [ref] if '@' in ref else
+                sorted(local.get('RepoDigests') or [],
+                       key=lambda value: (image_repository(value) != image_repository(ref), value)))
             for candidate in candidates:
                 try:
                     candidate = immutable_ref(candidate)
@@ -495,6 +498,8 @@ def backup(stack, timeout=120, sleep=time.sleep):
     if not marker.is_file() or marker.read_text().strip() != stack.mode:
         raise RuntimeError('storage-mode marker is missing or differs from .env')
     stack.attest_capture()
+    if any('@' not in service['image'] for service in stack.config['services'].values()):
+        print('Image custody is external: retain the recorded immutable references in a registry or a tested off-host image archive; publication was not checked.', file=sys.stderr, flush=True)
     destination = stack.backups / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     destination.mkdir(mode=0o700)
     stopped = []
@@ -604,7 +609,7 @@ def verify_checkpoint(stack, source):
         if captured != list(defaults.values()):
             raise RuntimeError('Checkpoint legacy image pins differ')
         captured = {name: defaults[name] for name in stack.config['services']}
-    stack.resolve_images()
+    stack.resolve_images(captured)
     if (not isinstance(captured, dict) or set(captured) != set(stack.images)
             or any(immutable_ref(ref) != stack.images[name] for name, ref in captured.items())):
         raise RuntimeError('Checkpoint immutable image identities differ')
@@ -642,11 +647,11 @@ def restore(stack, source):
     installation = stack.state / 'installation'
     installation.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source / 'installation', installation, dirs_exist_ok=True)
-    stack.start()
     if stack.image_overrides:
-        print('Retain these verified image overrides in the installation .env before the next Compose update:')
+        print('Retain these verified image overrides in the installation .env before the next Compose update:', flush=True)
         for key, ref in sorted(stack.image_overrides.items()):
-            print(f'{key}={ref}')
+            print(f'{key}={ref}', flush=True)
+    stack.start()
     print('Restore complete; all five readiness probes passed', flush=True)
 
 

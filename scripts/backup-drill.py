@@ -126,7 +126,7 @@ def main():
         raise RuntimeError('drill network already exists; refusing to touch it')
     image_tag = project + '-loki:drill'
     if checkpoint.bootstrap.run(['docker', 'image', 'inspect', image_tag]).returncode == 0:
-        raise RuntimeError('drill image tag already exists; refusing to touch it')
+        raise RuntimeError(f'drill image tag already exists; after confirming no drill is running, remove only {image_tag} with docker image rm')
     work = Path(tempfile.mkdtemp(prefix='observability-drill-'))
     work.chmod(0o755)
     root = prepare_checkout(root, work / 'checkout')
@@ -205,6 +205,6 @@ if __name__ == '__main__':
     signal.signal(signal.SIGHUP, interrupted)
     try:
         main()
-    except (RuntimeError, OSError, ValueError, KeyError, StopIteration, KeyboardInterrupt) as error:
+    except (RuntimeError, OSError, ValueError, KeyError, StopIteration, KeyboardInterrupt, checkpoint.bootstrap.Refused) as error:
         print(f'FAIL: {error}', file=sys.stderr)
         sys.exit(1)

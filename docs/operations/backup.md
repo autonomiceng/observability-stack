@@ -59,14 +59,23 @@ Loki, Mimir and Tempo in that order, then RustFS in S3 mode, with 120 seconds pe
 Before stopping anything, backup resolves every effective image locally and verifies running
 content IDs and all volume/bind mounts against resolved Compose, requires every source volume
 to exist, and rejects other running consumers of those volumes. Tag-only references require
-a locally available RepoDigest whose inspected content ID
-matches the configured image and running container. Capture prefers the configured
-repository when several digests exist; otherwise retain access to the registry recorded
-in the manifest. Local-only images without a verified
-RepoDigest are refused before fencing or creating a capture directory. Helpers use the verified
-Caddy content ID with pulling disabled. Image resolution and helpers never pull. A mutable tag alone
-cannot reproduce a Checkpoint. Preserve access to the captured digest references in a registry
-or a protected image archive, and load/pull those exact references before recovery.
+a locally available immutable reference whose inspected content ID matches the configured
+image and running container. Capture prefers the configured repository when several
+references exist. Docker can attach `RepoDigests` to unpublished local builds and aliases:
+this check does not prove registry publication or continued availability. Images without
+any verifiable immutable reference are refused before fencing or creating a capture directory.
+Helpers use the verified Caddy content ID with pulling disabled; image resolution and
+helpers never pull. A mutable tag alone cannot reproduce a Checkpoint.
+
+Image custody is external to the data Checkpoint. Preserve the recorded references in a
+retained registry, or retain a protected image archive whose load has been tested on the
+recovery host's Docker store type and platform. A same-host archive roundtrip does not
+qualify a different engine/store type or architecture. After loading, every captured
+immutable reference must resolve to the expected content before recovery can proceed;
+a tag-only load without those references is unsupported. Capture reports this obligation
+for mutable configurations. Unpublished aliases need verified archive custody because
+Docker cannot pull them from a registry. Never infer an off-host image backup from a
+successful data Checkpoint.
 
 Volume existence and consumers are checked again under the
 fence before archiving and before publishing the manifest. Every stop must reach exit 0 without `OOMKilled`; forced
@@ -168,7 +177,8 @@ verify names with `docker volume ls` before proceeding.
 
 Manifest v2 records active services and their immutable references. Restore resolves the supplied
 env's effective images locally and compares immutable references before checking destination
-volumes or writing data. A tag that moved is refused; set the corresponding `OB_*_IMAGE` to
+volumes or writing data. Restore verifies each captured reference directly, regardless of additional local aliases.
+A tag that moved is refused; set the corresponding `OB_*_IMAGE` to
 the captured reference. Restore and capture resumption pin newly created services to the verified
 references for that invocation; already digest-pinned references stay unchanged. Restore prints
 any required overrides. Retain those overrides in `.env` for subsequent native Compose

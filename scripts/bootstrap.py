@@ -150,7 +150,7 @@ def images(compose: Path) -> dict[str, str]:
             fallback = re.fullmatch(r"\$\{OB_[A-Z0-9_]+_IMAGE:-(.+)\}", ref)
             out[service] = fallback[1] if fallback else ref
             if '${' in out[service]:
-                raise ValueError(f'{service}: unrecognized image default')
+                raise Refused('image_default_unrecognized', service)
     return out
 
 
