@@ -281,6 +281,20 @@ class BootstrapTests(unittest.TestCase):
                         bootstrap.access_config(settings)
                     self.assertEqual(ctx.exception.code, "access_host_invalid")
 
+    def test_access_enforces_complete_hostname_length(self):
+        for key in ("OB_PUBLIC_DOMAIN", "OB_GRAFANA_HOST"):
+            for length in (253, 254):
+                host = ".".join(["a" * 63] * 3 + ["b" * (length - 192)])
+                settings = {"OB_ACCESS_MODE": "public", "OB_PUBLIC_DOMAIN": "observe.example.com",
+                            "OB_GRAFANA_HOST": "grafana.example.com", key: host}
+                with self.subTest(key=key, length=length):
+                    if length == 253:
+                        bootstrap.access_config(settings)
+                    else:
+                        with self.assertRaises(bootstrap.Refused) as ctx:
+                            bootstrap.access_config(settings)
+                        self.assertEqual(ctx.exception.code, "access_host_invalid")
+
     def test_access_accepts_valid_dns_label_boundaries(self):
         for host in ("a.example.com", "a" * 63 + ".example.com", "Foo.b-ar.example.com"):
             with self.subTest(host=host):

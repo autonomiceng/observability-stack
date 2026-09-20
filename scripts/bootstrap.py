@@ -272,7 +272,7 @@ def access_config(settings: dict[str, str]) -> None:
         ip_root = False
     settings["OB_GRAFANA_HOST"] = settings.get("OB_GRAFANA_HOST") or ("grafana.localhost" if ip_root else "grafana." + domain)
     for host in (domain, settings["OB_GRAFANA_HOST"]):
-        if any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
+        if len(host) > 253 or any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
                for label in host.split(".")):
             raise Refused("access_host_invalid", "root and Grafana hosts must be explicit DNS names or an IPv4 root")
     if domain == settings["OB_GRAFANA_HOST"]:
