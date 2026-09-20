@@ -142,6 +142,12 @@ class Stack:
             identity = local['Id']
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', identity):
                 raise RuntimeError('invalid local image identity')
+            if captured is not None:
+                try:
+                    immutable_ref(captured[service])
+                except RuntimeError:
+                    raise RuntimeError(f'{service}: Checkpoint manifest records a malformed image reference; '
+                                       'recover an intact manifest with immutable name@sha256 references') from None
             candidates = ([captured[service]] if captured is not None else [ref] if '@' in ref else
                 sorted(local.get('RepoDigests') or [],
                        key=lambda value: (image_repository(value) != image_repository(ref), value)))
@@ -158,7 +164,7 @@ class Stack:
                 if captured is not None:
                     raise RuntimeError(f'{service}: configured image content differs from the captured '
                                        'Checkpoint reference; set the matching OB_*_IMAGE to the '
-                                       'reference recorded in manifest.json')
+                                       'reference this Checkpoint recorded for the service')
                 raise RuntimeError(f'{service}: Checkpoint requires locally verified RepoDigests; '
                                    'publish and pull the exact experiment or select a digest reference before capture')
         self.images, self.image_ids = refs, ids
@@ -607,9 +613,9 @@ def verify_checkpoint(stack, source):
     for path in configuration_files():
         if path.read_bytes() != (source / 'configuration' / path.relative_to(ROOT)).read_bytes():
             raise RuntimeError('restore requires the matching configuration checkout')
-    defaults = bootstrap.images(ROOT / 'compose.yaml')
     captured = doc['images']
     if doc['version'] == 1:
+        defaults = bootstrap.images(ROOT / 'compose.yaml')
         if captured != list(defaults.values()):
             raise RuntimeError('Checkpoint legacy image pins differ')
         captured = {name: defaults[name] for name in stack.config['services']}

@@ -849,7 +849,8 @@ class CheckpointVerificationTests(unittest.TestCase):
                     (source / 'configuration/config.alloy').write_text('different config')
                     self.publish(source)
                 self.stack.check_empty = Mock()
-                message = 'captured Checkpoint reference' if defect in ('identity', 'mutable', 'non-string') else '.'
+                message = ('malformed image reference' if defect in ('mutable', 'non-string') else
+                           'configured image content differs' if defect == 'identity' else '.')
                 with self.assertRaisesRegex(RuntimeError, message):
                     checkpoint.restore(self.stack, source)
                 self.stack.check_empty.assert_not_called()
