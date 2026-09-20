@@ -21,7 +21,10 @@ class StatusIOTests(unittest.TestCase):
 
     def test_deadline_stops_descendant_after_direct_child_exits(self):
         marker = self.root / 'descendant-heartbeat'
-        child = "import pathlib,time; p=pathlib.Path(" + repr(str(marker)) + "); " + "\nfor i in range(200): p.write_text(str(i)); time.sleep(.02)"
+        identity = self.root / 'descendant-identity'
+        child = ("import os,pathlib,time; p=pathlib.Path(" + repr(str(marker)) + "); "
+                 + "pathlib.Path(" + repr(str(identity)) + ").write_text(str(os.getpid())+' '+pathlib.Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19]); "
+                 + "\nfor i in range(200): p.write_text(str(i)); time.sleep(.02)")
         parent = "import subprocess,sys; subprocess.Popen([sys.executable, '-c', " + repr(child) + "])"
         with self.assertRaises(io.Unavailable):
             io.run([sys.executable, '-c', parent], timeout=.3)
@@ -29,6 +32,17 @@ class StatusIOTests(unittest.TestCase):
         before = marker.read_text()
         time.sleep(.15)
         self.assertEqual(marker.read_text(), before, 'descendant continued after probe cleanup')
+        pid, started = identity.read_text().split()
+        def same_process_running():
+            try:
+                fields = Path('/proc', pid, 'stat').read_text().rsplit(')', 1)[1].split()
+            except FileNotFoundError:
+                return False
+            return fields[19] == started and fields[0] not in ('Z', 'X')
+        deadline = time.monotonic() + 1
+        while same_process_running() and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertFalse(same_process_running(), 'captured descendant survived cleanup')
 
     def test_public_atomic_mode_and_old_file_survives_replace_failure(self):
         with io.directory(self.root / 'console') as fd:
