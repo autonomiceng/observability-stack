@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-from functools import partial
 import json
 import http.client
 import ipaddress
@@ -29,6 +28,7 @@ import urllib.error
 import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Callable
 
@@ -373,6 +373,7 @@ def access_config(settings: dict[str, str]) -> None:
 
 
 def compose_up(root: Path, env_file: Path, runner: Runner, s3: bool = False, proxy: bool = False) -> None:
+    # Fifteen minutes includes cold image pulls; a timeout preserves cached layers for retry.
     result = runner([
         "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
         "-f", str(root / "compose.yaml"),

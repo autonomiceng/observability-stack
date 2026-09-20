@@ -180,6 +180,16 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(settings["OB_STATE_DIR"], "/srv/pg")
 
     def test_docker_timeout_reports_failure_without_exposing_command_details(self):
+        options = []
+        def observe(argv, **kwargs):
+            options.append(kwargs)
+            return subprocess.CompletedProcess(argv, 0, '', '')
+        with patch.object(bootstrap.subprocess, 'run', side_effect=observe):
+            selected = bootstrap.bootstrap.__defaults__[0]
+            selected(['docker', 'network', 'inspect', 'test'])
+            bootstrap.compose_up(self.root, self.env, selected)
+            selected(['python3', 'status_observer.py'], timeout=120)
+        self.assertEqual([row['timeout'] for row in options], [60, 900, 120])
         with patch.object(bootstrap, 'bootstrap', side_effect=subprocess.TimeoutExpired(['private'], 60)), \
                 patch('sys.stderr', new_callable=io.StringIO) as error:
             self.assertEqual(bootstrap.main(), 3)
