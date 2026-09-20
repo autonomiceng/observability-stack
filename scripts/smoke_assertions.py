@@ -68,7 +68,9 @@ def check(env_file: Path, origin: str, project: str) -> None:
     for service in ('grafana', 'loki', 'tempo', 'mimir', 'alloy'):
         get(base + '/health/' + service)
     print('ok: all five HTTP readiness endpoints', flush=True)
-    assert 'Observability Stack' in get(base + '/')
+    page = get(base + '/')
+    assert 'Observability Stack' in page
+    assert re.search(r'<li data-optional-link="rustfs"[^>]*\shidden', page), 'optional console card must default hidden'
     assert 'grafana' in json.loads(get(base + '/versions.json'))['images']
     print('ok: console and versions', flush=True)
 
@@ -166,8 +168,11 @@ def check_rustfs_console(settings):
         finally:
             connection.close()
 
-    if settings['OB_ACCESS_MODE'] == 'proxy':
-        wrong_authority = urllib.parse.urlsplit(origin).hostname + ':8452'
+    if settings['OB_ACCESS_MODE'] == 'proxy' and settings.get('OB_RUSTFS_AUTHORITY'):
+        parsed = urllib.parse.urlsplit(origin)
+        host = '[' + parsed.hostname + ']' if ':' in parsed.hostname else parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+        wrong_authority = f'{host}:{port + 1 if port < 65535 else port - 1}'
         status, location, body = request('/', host=wrong_authority)
         assert status == 200 and location is None and b'Observability Stack' in body, wrong_authority
         assert request('/rustfs/admin/v3/accountinfo', host=wrong_authority)[0] == 404
