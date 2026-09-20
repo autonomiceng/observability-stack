@@ -59,16 +59,28 @@ def inventory(directory):
     return result
 
 
-def image_refs():
-    return [m[1] for m in re.finditer(r'^    image: (\S+)$', (ROOT / 'compose.yaml').read_text(), re.M)]
+def image_repository(ref):
+    name = ref.split('@', 1)[0]
+    if ':' in name.rsplit('/', 1)[-1]:
+        name = name.rsplit(':', 1)[0]
+    return name.removeprefix('docker.io/').removeprefix('index.docker.io/').removeprefix('library/')
 
 
-def manifest(directory, env_file, mode):
+def immutable_ref(ref):
+    if not re.fullmatch(r'[a-z0-9][a-zA-Z0-9./:_-]*@sha256:[0-9a-f]{64}', ref):
+        raise RuntimeError('Checkpoint requires a reproducible immutable image reference')
+    name, digest = ref.split('@')
+    if ':' in name.rsplit('/', 1)[-1]:
+        name = name.rsplit(':', 1)[0]
+    return name + '@' + digest
+
+
+def manifest(directory, env_file, mode, images):
     # Recovery needs the original env through a separate protected channel.
     keys = sorted({m['key'] for m in map(bootstrap.ENV_LINE.match, env_file.read_text().splitlines()) if m})
     return {
-        'version': 1, 'timestamp': datetime.now(timezone.utc).isoformat(),
-        'images': image_refs(), 'env_keys': keys, 'storage_mode': mode, 'fenced': True,
+        'version': 2, 'timestamp': datetime.now(timezone.utc).isoformat(),
+        'images': images, 'env_keys': keys, 'storage_mode': mode, 'fenced': True,
         'artifacts': inventory(directory),
     }
 
@@ -103,14 +115,45 @@ class Stack:
             self.command += ['-f', str(ROOT / 'compose.proxy.yaml')]
         self.config = json.loads(self.dc('config', '--format', 'json'))
         self.project = self.config['name']
-        self.image = self.config['services']['caddy']['image']
+        self.image = None
         self.volumes = VOLUMES + (('rustfs-data',) if self.mode == 's3' else ())
         self.writers = WRITERS + (('rustfs',) if self.mode == 's3' else ())
 
     def dc(self, *args):
-        return checked(self.command + list(args), self.runner)
+        command = self.command + list(args)
+        if args[0] == 'up' and getattr(self, 'image_overrides', None):
+            command = ['env', *[f'{key}={ref}' for key, ref in self.image_overrides.items()], *command]
+        return checked(command, self.runner)
+
+    def resolve_images(self):
+        refs, ids = {}, {}
+        for service, config in self.config['services'].items():
+            ref = config['image']
+            local = json.loads(checked(['docker', 'image', 'inspect', ref], self.runner))[0]
+            identity = local['Id']
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', identity):
+                raise RuntimeError('invalid local image identity')
+            candidates = [ref] if '@' in ref else sorted(local.get('RepoDigests') or [],
+                key=lambda value: (image_repository(value) != image_repository(ref), value))
+            for candidate in candidates:
+                candidate = immutable_ref(candidate)
+                verified = json.loads(checked(['docker', 'image', 'inspect', candidate], self.runner))[0]
+                if verified['Id'] == identity:
+                    refs[service], ids[service] = candidate, identity
+                    break
+            else:
+                raise RuntimeError('Checkpoint requires locally verified RepoDigests; local-only images refused')
+        self.images, self.image_ids = refs, ids
+        self.image = ids.get('caddy')
+        # Keep resume/restore on the attested content even if a tag moves afterward.
+        self.image_overrides = {
+            'OB_' + service.removesuffix('-init').upper() + '_IMAGE': ref
+            for service, ref in refs.items()
+        }
 
     def helper(self, mounts, script, *args, network='none', timeout=None):
+        if self.image is None:
+            self.resolve_images()
         deadline = time.monotonic() + timeout if timeout is not None else None
         token = uuid.uuid4().hex
         name = f'{self.project}-checkpoint-{token}'
@@ -129,7 +172,7 @@ class Stack:
             # Finish create before honoring interruption so cleanup owns a known container.
             for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
                 handlers[signum] = signal.signal(signum, defer)
-            checked(['docker', 'create', '--name', name, '--label', f'{label}={token}',
+            checked(['docker', 'create', '--pull', 'never', '--name', name, '--label', f'{label}={token}',
                      '--network', network, '--user', '0', *mounts, '--entrypoint', 'sh', self.image,
                      '-ec', script, 'sh', *args], runner)
             for signum, handler in handlers.items():
@@ -252,6 +295,7 @@ class Stack:
         return self.config['volumes'][key]['name']
 
     def attest_capture(self):
+        self.resolve_images()
         ids = self.dc('ps', '-q', *self.writers).split()
         if not ids:
             raise RuntimeError('backup requires the complete stack running')
@@ -264,8 +308,8 @@ class Stack:
                 raise RuntimeError('backup container ownership differs from resolved Compose')
             services.append(service)
             expected = self.config['services'][service]
-            if container['Config']['Image'] != expected['image']:
-                raise RuntimeError('backup requires the checkout pins matching the running services')
+            if container['Image'] != self.image_ids[service]:
+                raise RuntimeError('backup requires configured image identity matching the running services')
             mounts = set()
             for mount in expected.get('volumes', []):
                 kind = mount['type']
@@ -318,7 +362,7 @@ class Stack:
                 raise RuntimeError(f'restore refused: non-empty or unreadable volume {name}') from error
 
     def start(self):
-        bootstrap.write_versions(ROOT, ROOT / 'compose.yaml', self.settings)
+        bootstrap.write_versions(ROOT, ROOT / 'compose.yaml', self.settings, services=self.config['services'])
         (self.state / 'textfile').mkdir(parents=True, exist_ok=True)
         bootstrap.write_provisioning(ROOT, self.state, self.settings)
         bootstrap.ensure_volumes(self.runner, self.settings.get('OB_VOLUME_PREFIX') or bootstrap.PROJECT,
@@ -477,7 +521,7 @@ def backup(stack, timeout=120, sleep=time.sleep):
         for service in stack.writers:
             stack.stopped_cleanly(service)
         stack.check_capture_volumes()
-        doc = manifest(destination, stack.env_file, stack.mode)
+        doc = manifest(destination, stack.env_file, stack.mode, stack.images)
         for path in destination.rglob('*'):
             if path.is_file():
                 with path.open('rb') as handle:
@@ -532,7 +576,7 @@ def backup(stack, timeout=120, sleep=time.sleep):
 
 def verify_checkpoint(stack, source):
     doc = json.loads((source / 'manifest.json').read_text())
-    if (doc['version'] != 1 or doc['images'] != image_refs() or not doc['fenced']
+    if (doc['version'] not in (1, 2) or not doc['fenced']
             or doc['storage_mode'] != stack.mode):
         raise RuntimeError('Checkpoint format, pins, fence or storage mode differs')
     if doc['artifacts'] != inventory(source):
@@ -542,6 +586,16 @@ def verify_checkpoint(stack, source):
     for path in configuration_files():
         if path.read_bytes() != (source / 'configuration' / path.relative_to(ROOT)).read_bytes():
             raise RuntimeError('restore requires the matching configuration checkout')
+    defaults = bootstrap.images(ROOT / 'compose.yaml')
+    captured = doc['images']
+    if doc['version'] == 1:
+        if captured != list(defaults.values()):
+            raise RuntimeError('Checkpoint legacy image pins differ')
+        captured = {name: defaults[name] for name in stack.config['services']}
+    stack.resolve_images()
+    if (not isinstance(captured, dict) or set(captured) != set(stack.images)
+            or any(immutable_ref(ref) != stack.images[name] for name, ref in captured.items())):
+        raise RuntimeError('Checkpoint immutable image identities differ')
     verify_archives(source, stack.volumes)
     lines, _ = bootstrap.read_env(stack.env_file)
     present = {match['key'] for match in map(bootstrap.ENV_LINE.match, lines) if match}

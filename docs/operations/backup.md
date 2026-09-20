@@ -19,8 +19,8 @@ volume plus configuration, and account for growth between captures.
 
 Each UTC timestamp directory is mode 0700 and contains:
 
-- `manifest.json`: completion time, full image pins, environment key names, storage mode,
-  fence status, byte sizes and SHA-256 checksums. The manifest is published last, after archive-member validation.
+- `manifest.json`: completion time, effective immutable image references by service, environment
+  key names, storage mode, fence status, byte sizes and SHA-256 checksums. The manifest is published last, after archive-member validation.
 - `grafana-data.tar`, `loki-data.tar`, `mimir-data.tar`, `tempo-data.tar`, `alloy-data.tar`:
   complete, uncompressed archives preserving volume ownership. Grafana SQLite and its
   journal are copied consistently with Grafana stopped.
@@ -29,8 +29,8 @@ Each UTC timestamp directory is mode 0700 and contains:
 - `configuration/`: both Compose files, Alloy config and `docker/` provisioning/configuration.
 
 Keep the **original `.env` separately** in protected configuration backup or a password
-manager, and retain the matching checkout. The manifest records keys only; the scripts
-never copy env values into the Checkpoint. Manifest v1 cannot attest that supplied secret
+manager, and retain the matching checkout. The manifest records environment key names; the scripts
+never copy secret values from the env file into the Checkpoint. Manifests cannot attest that supplied secret
 values match those used at capture. Checks that all managed keys exist and that shell values
 agree with the supplied file do not establish historical identity. Restore warns about
 captured key names absent from the supplied file, without displaying values; it cannot detect
@@ -56,9 +56,19 @@ the source volumes and use a backup procedure that preserves the required file s
 
 Pause direct producers before backup. The default fence stops Caddy, Alloy, Grafana,
 Loki, Mimir and Tempo in that order, then RustFS in S3 mode, with 120 seconds per service.
-Before stopping anything, backup verifies the live image pins and all volume/bind mounts
-against resolved Compose, requires every source volume to exist, and rejects other running
-consumers of those volumes. Volume existence and consumers are checked again under the
+Before stopping anything, backup resolves every effective image locally and verifies running
+content IDs and all volume/bind mounts against resolved Compose, requires every source volume
+to exist, and rejects other running consumers of those volumes. Tag-only references require
+a locally available RepoDigest whose inspected content ID
+matches the configured image and running container. Capture prefers the configured
+repository when several digests exist; otherwise retain access to the registry recorded
+in the manifest. Local-only images without a verified
+RepoDigest are refused before fencing or creating a capture directory. Helpers use the verified
+Caddy content ID with pulling disabled. Image resolution and helpers never pull. A mutable tag alone
+cannot reproduce a Checkpoint. Preserve access to the captured digest references in a registry
+or a protected image archive, and load/pull those exact references before recovery.
+
+Volume existence and consumers are checked again under the
 fence before archiving and before publishing the manifest. Every stop must reach exit 0 without `OOMKilled`; forced
 kills, missing containers and unsuccessful exits abort before a completed manifest.
 `--stop-timeout SECONDS` sets each service's stop grace and must be a positive integer.
@@ -155,6 +165,17 @@ verify names with `docker volume ls` before proceeding.
 4. It restores every data volume and the marker before starting any service. It boots with
    Compose health checks and probes all five HTTP endpoints.
    Verify historical queries and Grafana login before routing producers to the new stack.
+
+Manifest v2 records active services and their immutable references. Restore resolves the supplied
+env's effective images locally and compares immutable references before checking destination
+volumes or writing data. A tag that moved is refused; set the corresponding `OB_*_IMAGE` to
+the captured reference. Restore and capture resumption pin newly created services to the verified
+references for that invocation. Retain those overrides in `.env` for subsequent native Compose
+operations. Original secrets, storage mode and configuration must still match.
+Legacy v1 manifests remain accepted with their original byte-identical configuration checkout
+and shipped pin list; effective active images must resolve to those same immutable references.
+The newer Checkpoint scripts can be used with that checkout. Neither manifest version attests
+historical secret values.
 
 Failed restore leaves partial storage for diagnosis. Use another empty destination after
 fixing the cause. If the final startup fails, some services may already be running.

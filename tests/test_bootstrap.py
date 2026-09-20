@@ -30,6 +30,10 @@ def runner_with(volumes=(), network_exists=True, labelled_volumes=()):
             return subprocess.CompletedProcess(argv, 0, "\n".join(found), "")
         if argv[:3] == ["docker", "network", "inspect"]:
             return subprocess.CompletedProcess(argv, 0 if network_exists else 1, "", "")
+        if argv[:2] == ["docker", "compose"] and "config" in argv:
+            refs = bootstrap.images(Path(__file__).resolve().parent.parent / 'compose.yaml')
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                'services': {name: {'image': ref} for name, ref in refs.items()}}), "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     run.calls = calls
@@ -74,6 +78,36 @@ class BootstrapTests(unittest.TestCase):
         self.assertTrue(after.startswith(before))
         self.assertIn("MY_CUSTOM=1", after)
 
+    def test_complete_image_overrides_survive_render_with_empty_and_unset_defaults(self):
+        compose = self.template.parent / 'compose.yaml'
+        defaults = bootstrap.images(compose)
+        for value in ('registry.example:5000/team/image:experiment', '', None):
+            with self.subTest(value=value):
+                lines = []
+                for service, ref in defaults.items():
+                    key = 'OB_' + service.removesuffix('-init').upper() + '_IMAGE'
+                    self.assertIn('${' + key + ':-' + ref + '}', compose.read_text())
+                    if service != 'rustfs-init' and value is not None:
+                        lines.append(f'{key}={value}')
+                self.env.write_text('\n'.join(lines) + '\n')
+                self.render()
+                for line in lines:
+                    self.assertIn(line + '\n', self.env.read_text())
+                self.assertEqual(bootstrap.images(compose), defaults)
+        self.assertEqual(defaults['rustfs'], defaults['rustfs-init'])
+
+    def test_default_validation_clears_shell_image_and_compose_overrides(self):
+        script = self.template.parent / 'scripts/validate.sh'
+        prefix = script.read_text().split('for tool in ')[0]
+        poison = {'OB_CADDY_IMAGE': 'private-experiment', 'OB_LOKI_IMAGE': 'local-only',
+                  'COMPOSE_FILE': 'unrelated.yaml', 'COMPOSE_ENV_FILES': 'private.env',
+                  'COMPOSE_PROFILES': 's3'}
+        with patch.dict(os.environ, poison):
+            result = subprocess.run(['sh', '-c', prefix + '\nenv', str(script)],
+                                    text=True, capture_output=True, check=True)
+        names = {line.split('=', 1)[0] for line in result.stdout.splitlines()}
+        self.assertFalse(names & poison.keys())
+
     def test_fresh_render_persists_a_managed_secret_from_the_shell(self):
         with patch.dict(os.environ, {"OB_GRAFANA_ADMIN_PASSWORD": "operator-choice"}):
             self.assertEqual(self.render(), 0)
@@ -108,10 +142,17 @@ class BootstrapTests(unittest.TestCase):
 
     def test_versions_json_reads_tags_from_compose(self):
         compose = Path(__file__).resolve().parent.parent / "compose.yaml"
-        bootstrap.write_versions(self.root, compose)
+        bootstrap.write_versions(self.root, compose, {"OB_S3_SECRET_KEY": "never-publish"}, services={
+            "grafana": {"image": "private.example/custom:grafana-test"},
+            "loki": {"image": "user:password@registry/loki:secret"},
+            "tempo": {"image": "grafana/tempo@sha256:" + "a" * 64},
+            "unexpected": {"image": "secret"}})
         doc = json.loads((self.root / "data" / "console" / "versions.json").read_text())
-        self.assertEqual(doc["images"]["grafana"], bootstrap.images(compose)["grafana"])
-        self.assertNotIn("sha256", json.dumps(doc))
+        self.assertEqual(doc["images"]["grafana"], "grafana-test")
+        self.assertEqual(doc["images"]["loki"], "unknown")
+        self.assertEqual(doc["images"]["tempo"], "sha256:" + "a" * 64)
+        for private in ("never-publish", "password", "unexpected", "private.example"):
+            self.assertNotIn(private, json.dumps(doc))
         self.assertEqual(set(doc["images"]), set(bootstrap.images(compose)))
 
     def test_installation_state_follows_compose_project_name(self):
@@ -163,7 +204,7 @@ class BootstrapTests(unittest.TestCase):
         for line in before.splitlines():
             if not line.startswith(('COMPOSE_FILE=', 'COMPOSE_PROFILES=', 'OB_PUBLIC_PORT_SUFFIX=')):
                 self.assertIn(line + '\n', after)
-        up = next(call for call in run.calls if call[:2] == ['docker', 'compose'])
+        up = next(call for call in run.calls if call[:2] == ['docker', 'compose'] and 'up' in call)
         self.assertIn(str(self.root / 'compose.s3.yaml'), up)
         self.assertEqual([call.args[0] for call in ready.call_args_list],
                          [origin + '/health/' + name for origin in ('http://127.0.0.1:80', 'https://127.0.0.1:443')
@@ -380,7 +421,7 @@ class BootstrapTests(unittest.TestCase):
                     "OB_PUBLIC_PORT_SUFFIX": ":18080"}
         bootstrap.access_config(settings)
         self.assertEqual(settings["OB_GRAFANA_HOST"], "grafana.localhost")
-        bootstrap.write_versions(self.root, self.template.parent / "compose.yaml", settings)
+        bootstrap.write_versions(self.root, self.template.parent / "compose.yaml", settings, services={})
         self.assertEqual(json.loads((self.root / "console/links.json").read_text()),
                          {"grafana": "http://grafana.localhost:18080"})
         settings["OB_ACCESS_MODE"] = "public"
