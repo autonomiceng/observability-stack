@@ -166,9 +166,9 @@ def write_versions(root: Path, compose: Path, settings: dict[str, str] | None = 
     }
     (console / "versions.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     settings = settings or {}
-    grafana_host = settings.get("OB_GRAFANA_HOST", "grafana.localhost")
-    origin = f'{settings.get("OB_SCHEME", "http")}://{grafana_host}{settings.get("OB_PUBLIC_PORT_SUFFIX", "")}'
-    (console / "links.json").write_text(json.dumps({"grafana": origin}) + "\n", encoding="utf-8")
+    links = {"grafana": grafana_origin(settings)}
+    links.update({key: value for key, value in doc["links"].items() if value})
+    (console / "links.json").write_text(json.dumps(links) + "\n", encoding="utf-8")
 
 
 def ensure_network(runner: Runner, name: str = NETWORK) -> None:
@@ -254,6 +254,56 @@ def local_origin(settings: dict[str, str], scheme: str | None = None) -> str:
     return f"{scheme}://127.0.0.1:{port}"
 
 
+def grafana_origin(settings: dict[str, str]) -> str:
+    return settings.get("OB_GRAFANA_URL") or (
+        f'{settings.get("OB_SCHEME", "http")}://'
+        f'{settings.get("OB_GRAFANA_HOST", "grafana.localhost")}'
+        f'{settings.get("OB_PUBLIC_PORT_SUFFIX", "")}')
+
+
+def grafana_url_config(settings: dict[str, str]) -> None:
+    # Validate before urlsplit, which silently strips some whitespace characters.
+    origin = settings.get("OB_GRAFANA_URL", "")
+    settings["OB_GRAFANA_URL"] = origin
+    settings["OB_GRAFANA_URL_HOST"] = ""
+    settings["OB_GRAFANA_AUTHORITY"] = ""
+    if not origin:
+        return
+    try:
+        if re.search(r"[\s/?#@\\]", origin.removeprefix("https://").removeprefix("http://")):
+            raise ValueError
+        url = urllib.parse.urlsplit(origin)
+        host = url.hostname or ""
+        if url.scheme not in ("http", "https") or not url.netloc or url.path or url.query or url.fragment:
+            raise ValueError
+        if url.netloc.startswith("["):
+            if not re.fullmatch(r"[0-9a-f:.]+", host):
+                raise ValueError
+            ipaddress.IPv6Address(host)
+            authority_host = "[" + host + "]"
+        else:
+            if len(host) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                                          for label in host.split(".")):
+                raise ValueError
+            authority_host = host
+        port = url.port
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError
+        authority = authority_host + (":" + str(port) if port is not None else "")
+        if url.netloc.lower() != authority:
+            raise ValueError
+        if settings["OB_ACCESS_MODE"] == "public" and url.scheme != "https":
+            raise ValueError
+    except ValueError as error:
+        raise Refused("grafana_url_invalid", "OB_GRAFANA_URL must be an HTTP(S) origin with no path, "
+                      "credentials, query or fragment; public mode requires HTTPS") from error
+    if port == (443 if url.scheme == "https" else 80):
+        authority = authority_host
+    settings["OB_GRAFANA_URL"] = url.scheme + "://" + authority
+    settings["OB_GRAFANA_URL_HOST"] = host
+    settings["OB_GRAFANA_AUTHORITY"] = authority
+
+
 def access_config(settings: dict[str, str]) -> None:
     mode = settings.get("OB_ACCESS_MODE") or "local"
     if mode not in ("local", "public", "proxy"):
@@ -293,6 +343,7 @@ def access_config(settings: dict[str, str]) -> None:
         port = settings.get(key, "80" if key == "OB_HTTP_PORT" else "443")
         if not port.isdigit() or not 1 <= int(port) <= 65535:
             raise Refused("access_port_invalid", key + " must be a port number")
+    grafana_url_config(settings)
     peers = settings.get("OB_TRUSTED_PROXIES", "").split()
     if mode == "proxy" and not peers:
         raise Refused("proxy_trust_required", "set OB_TRUSTED_PROXIES to exact Platform Edge peer IPs")
@@ -437,7 +488,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         saved_keys = (
             "OB_ACCESS_MODE", "OB_PUBLIC_DOMAIN", "OB_GRAFANA_HOST", "OB_SCHEME",
             "OB_BIND_HOST", "OB_HTTP_PORT", "OB_HTTPS_PORT", "OB_PUBLIC_PORT_SUFFIX",
-            "OB_TRUSTED_PROXIES", "OB_OPERATOR_ALLOW", "COMPOSE_FILE", "COMPOSE_PROFILES",
+            "OB_TRUSTED_PROXIES", "OB_OPERATOR_ALLOW", "OB_GRAFANA_URL",
+            "OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY", "COMPOSE_FILE", "COMPOSE_PROFILES",
         )
         lines = env_file.read_text().splitlines()
         for key in saved_keys:
@@ -503,7 +555,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             "status": "degraded" if delivery == "placeholder" else "ready",
             "problems": ["alert_delivery_placeholder"] if delivery == "placeholder" else [],
             "console": f"{scheme}://{origin}/",
-            "grafana": f"{scheme}://{settings['OB_GRAFANA_HOST']}{settings.get('OB_PUBLIC_PORT_SUFFIX', '')}/",
+            "grafana": grafana_origin(settings) + "/",
             "grafanaLogin": "admin",
             "next": "Log in to Grafana with admin and OB_GRAFANA_ADMIN_PASSWORD from .env; open Stacks or Explore.",
         }))

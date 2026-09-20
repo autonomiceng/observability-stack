@@ -11,6 +11,10 @@
         const origin = configured[link.dataset.link];
         if (/^https?:\/\//.test(origin)) link.href = origin + (link.dataset.path || "/");
       }
+      for (const link of document.querySelectorAll("[data-external]")) {
+        const url = configured[link.dataset.external];
+        if (url && /^https?:\/\//.test(url)) link.href = url;
+      }
       for (const label of document.querySelectorAll("[data-url]")) {
         const origin = configured[label.dataset.url];
         if (/^https?:\/\//.test(origin)) label.textContent = origin + (label.dataset.path || "");
@@ -66,10 +70,6 @@
       const v = await res.json();
       for (const el of document.querySelectorAll("[data-version]")) {
         el.textContent = v.images?.[el.dataset.version] ?? "unknown";
-      }
-      for (const link of document.querySelectorAll("[data-external]")) {
-        const url = v.links?.[link.dataset.external];
-        if (url && /^https?:\/\//.test(url)) link.href = url;
       }
       const when = document.querySelector("[data-pinned]");
       when.dateTime = v.pinnedAt ?? "";
