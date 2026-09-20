@@ -229,13 +229,13 @@ only the edge's exact source IPs (`/32` or `/128` also accepted). Subnets and sy
 are refused. Coordinate a stable Edge peer address with its operator and update trust if
 that address changes. Detailed `/versions.json`,
 upstream health bodies and alert-delivery diagnostics require the parsed client IP to match
-`OB_RUSTFS_CONSOLE_ALLOW`, which defaults to loopback. Other callers receive status-only responses.
+`OB_OPERATOR_ALLOW`, which defaults to loopback. Other callers receive status-only responses.
 Caddy accepts forwarded client IPs only from configured trusted proxies and parses the chain
 from right to left. The edge must correctly overwrite or append the connecting client's IP.
 Untrusted peers cannot gain access by supplying an `X-Forwarded-For` header.
 
 List the actual operator client
-addresses in `OB_RUSTFS_CONSOLE_ALLOW`, separately from proxy trust in `OB_TRUSTED_PROXIES`.
+addresses in `OB_OPERATOR_ALLOW`, separately from proxy trust in `OB_TRUSTED_PROXIES`.
 With no trusted proxy, the client address remains the connection's direct peer. Docker port
 forwarding may present the bridge address even for host loopback requests; add only a verified
 operator source if detailed local responses are needed.

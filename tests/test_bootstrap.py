@@ -634,9 +634,6 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn(str(self.root / "compose.proxy.yaml"), run.calls[-1])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class ConsoleAccessTests(unittest.TestCase):
     def test_console_allowlist_is_independent_of_monitoring_operators(self):
         settings = {'COMPOSE_PROFILES': 's3', 'OB_RUSTFS_CONSOLE': 'true',
@@ -647,6 +644,12 @@ class ConsoleAccessTests(unittest.TestCase):
         default = {'OB_OPERATOR_ALLOW': '192.0.2.7/32'}
         bootstrap.access_config(default)
         self.assertEqual(default['OB_RUSTFS_CONSOLE_ALLOW'], '127.0.0.1/8 ::1')
-        for value in ('', 'private_ranges', 'example.com', '127.0.0.1 {', '192.0.2.1/33'):
-            with self.assertRaises(bootstrap.Refused):
+        for value in ('', 'private_ranges', 'example.com', '127.0.0.1 {', '192.0.2.1/33',
+                      '0.0.0.0/0', '::/0'):
+            with self.assertRaises(bootstrap.Refused) as refused:
                 bootstrap.access_config(settings | {'OB_RUSTFS_CONSOLE_ALLOW': value})
+            self.assertEqual(refused.exception.code, 'rustfs_console_allow_invalid')
+
+
+if __name__ == "__main__":
+    unittest.main()

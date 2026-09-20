@@ -89,7 +89,7 @@ sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
     -e "s#^OB_PLATFORM_NETWORK=.*#OB_PLATFORM_NETWORK=$network#" \
     -e "s#^OB_VOLUME_PREFIX=.*#OB_VOLUME_PREFIX=$COMPOSE_PROJECT_NAME#" \
     -e "s#^OB_ALERTS=.*#OB_ALERTS=placeholder#" \
-    -e "s#^OB_RUSTFS_CONSOLE_ALLOW=.*#OB_RUSTFS_CONSOLE_ALLOW=0.0.0.0/0 ::/0#" \
+    -e "s#^OB_RUSTFS_CONSOLE_ALLOW=.*#OB_RUSTFS_CONSOLE_ALLOW=127.0.0.1/8 ::1#" \
     -e "s#^OB_OPERATOR_ALLOW=.*#OB_OPERATOR_ALLOW=private_ranges#" \
     -e "s#^OB_STATE_DIR=.*#OB_STATE_DIR=$work/data#" \
     -e "s#^OB_BACKUP_DIR=.*#OB_BACKUP_DIR=$work/backups#" \
@@ -99,6 +99,9 @@ sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
 chmod 600 "$env_file"
 docker network create "$network" >/dev/null
 trap cleanup EXIT HUP INT TERM
+# Permit only this disposable project's host ingress peer, regardless of Docker's address pool.
+console_peer=$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' "$network")
+sed -i "s#^OB_RUSTFS_CONSOLE_ALLOW=.*#OB_RUSTFS_CONSOLE_ALLOW=$console_peer#" "$env_file"
 image=$(python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "scripts"); import bootstrap; print(bootstrap.images(Path("compose.yaml"))["caddy"])')
 producer=$(docker run -d --network none --log-driver=journald --log-opt cache-disabled=true \
   --entrypoint sh "$image" -c 'echo independent-stdout; echo independent-stderr >&2')

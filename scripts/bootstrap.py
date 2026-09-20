@@ -389,9 +389,11 @@ def access_config(settings: dict[str, str]) -> None:
         if not console_allow.strip():
             raise ValueError
         for address in console_allow.split():
-            ipaddress.ip_network(address, strict=False)
+            if ipaddress.ip_network(address, strict=False).prefixlen == 0:
+                raise ValueError
     except ValueError as error:
-        raise Refused("rustfs_console_allow_invalid", "OB_RUSTFS_CONSOLE_ALLOW requires client IPs or CIDRs") from error
+        raise Refused("rustfs_console_allow_invalid",
+                      "OB_RUSTFS_CONSOLE_ALLOW requires client IPs or CIDRs narrower than all addresses") from error
     settings["OB_RUSTFS_CONSOLE_ALLOW"] = console_allow
     if enabled == "true" and "s3" not in settings.get("COMPOSE_PROFILES", "").split(","):
         raise Refused("rustfs_console_requires_s3", "enable the console only on an existing S3 installation; "
