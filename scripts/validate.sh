@@ -19,7 +19,7 @@ docker compose version >/dev/null
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 OB_ALERTS=placeholder python3 scripts/bootstrap.py --env-file "$work/.env" --render-only >/dev/null
-OB_ALERTS=placeholder OB_ACCESS_MODE=proxy OB_TRUSTED_PROXIES=192.0.2.2/32 \
+OB_ALERTS=placeholder OB_ACCESS_MODE=proxy \
   OB_GRAFANA_URL=https://darkforge.tail694fe2.ts.net:8447 \
   OB_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8451 \
   python3 scripts/bootstrap.py --env-file "$work/url.env" --render-only >/dev/null
@@ -61,6 +61,7 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
         'darkforge.tail694fe2.ts.net' if explicit_url else 'grafana.localhost')
     assert services['caddy']['environment']['OB_GRAFANA_AUTHORITY'] == (
         'darkforge.tail694fe2.ts.net:8447' if explicit_url else '')
+    assert services['caddy']['environment']['OB_TRUSTED_PROXIES'] == '172.30.0.2/32', 'Edge trust default'
     assert services['alloy']['environment']['OB_SCRAPE_EDGE'] == 'false'
     assert services['alloy']['environment']['OB_SCRAPE_GATEWAY'] == 'false'
     assert services['alloy']['environment']['OB_SCRAPE_BACKPLANE'] == 'false'
@@ -148,7 +149,7 @@ for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'pr
   fi
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \
     -e "OB_ACCESS_MODE=$1" -e "OB_PUBLIC_DOMAIN=$2" -e OB_GRAFANA_HOST=grafana.example.com \
-    -e OB_TRUSTED_PROXIES=192.0.2.2/32 -e OB_RUSTFS_HOST=rustfs.example.com \
+    -e OB_TRUSTED_PROXIES=172.30.0.2/32 -e OB_RUSTFS_HOST=rustfs.example.com \
     -e "OB_OPERATOR_ALLOW=192.0.2.9/32" -e "OB_RUSTFS_CONSOLE_ALLOW=100.100.1.2/32" \
     -e "OB_RUSTFS_CONSOLE=$enabled" -e "OB_RUSTFS_URL_HOST=$url_host" -e "OB_RUSTFS_AUTHORITY=$rustfs_authority" \
     -e "OB_GRAFANA_URL_HOST=$url_host" -e "OB_GRAFANA_AUTHORITY=$authority" \
@@ -179,7 +180,7 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
     listeners = {address for server in servers for address in server['listen']}
     assert listeners == ({':80'} if path.name.startswith('caddy-proxy-') else {':80', ':443'}), path
     for server in servers:
-        assert server['trusted_proxies']['ranges'] == ['192.0.2.2/32']
+        assert server['trusted_proxies']['ranges'] == ['172.30.0.2/32']
         assert server['trusted_proxies_strict']
     encoded = json.dumps(config)
     status_routes = [item for item in objects(config) if status_route(item)]
@@ -258,3 +259,11 @@ done
 done
 echo 'Alloy config (Edge/gateway/backplane enabled/disabled, token absent/present): PASS'
 echo 'Grafana provisioning: checked by smoke.sh against the running Grafana APIs'
+# The canonical contract lives in platform-edge; CI has no sibling checkout to compare with.
+sync="${PLATFORM_EDGE_DIR:-$root/../platform-edge}/scripts/sync-conventions.sh"
+if [ -x "$sync" ] || [ -n "${PLATFORM_EDGE_DIR:-}" ]; then
+  "$sync" --check . >/dev/null
+  echo 'conventions: PASS (matches platform-edge)'
+else
+  echo "conventions: SKIP (no platform-edge checkout at ${sync%/scripts/*}; set PLATFORM_EDGE_DIR)"
+fi

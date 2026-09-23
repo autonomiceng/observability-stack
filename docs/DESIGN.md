@@ -123,7 +123,7 @@ Compose retains tested digest defaults and accepts complete `OB_*_IMAGE` referen
 Checkpoint tools verify effective content identity before capturing or restoring experiments.
 
 Bootstrap follows the gateway's lock, secret-preservation and existing-data refusal contract.
-It creates the platform network, starts Compose with `--wait`, then probes ingress readiness.
+It creates or validates the platform network allocation, starts Compose with `--wait`, then probes ingress readiness.
 Smoke uses separate volumes, network, console state, ports and generated credentials and
 refuses an existing disposable project name before installing its cleanup trap.
 

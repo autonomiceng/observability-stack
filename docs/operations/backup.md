@@ -160,7 +160,10 @@ verify names with `docker volume ls` before proceeding.
 1. Fence the old installation and its producers. Keep its volumes and Checkpoint intact.
    Obtain the original `.env` and matching config checkout. Do not run bootstrap first.
 2. Select a fresh `COMPOSE_PROJECT_NAME` and `OB_VOLUME_PREFIX`, isolated `OB_PLATFORM_NETWORK`, free ports and
-   an empty `OB_STATE_DIR`. Preserve the original secret values and storage profile.
+   an empty `OB_STATE_DIR`. An isolated network needs a subnet disjoint from the installed
+   Platform Network: set `OB_PLATFORM_SUBNET` and `OB_PLATFORM_IP_RANGE` (for example both
+   `172.31.0.0/24`) in the env file and export the same values in the shell, because restore
+   takes the network allocation from the shell and otherwise uses the contract default. Preserve the original secret values and storage profile.
    Update `OB_PUBLIC_PORT_SUFFIX` for the recovery endpoint. Provide an existing mounted
    `OB_BACKUP_DIR`; it may point to the source repository.
 3. Run `scripts/restore.sh <Checkpoint> --env-file <original-env>`. Restore verifies the
