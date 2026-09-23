@@ -594,6 +594,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
                          if key.startswith("OB_") or key in ("COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME")})
         access_config(settings)
         allocation = platform_allocation(settings)
+        settings["OB_PLATFORM_SUBNET"], settings["OB_PLATFORM_IP_RANGE"] = allocation
         s3 = "s3" in settings.get("COMPOSE_PROFILES", "").split(",")
         proxy = settings["OB_ACCESS_MODE"] == "proxy"
         files = compose_selection(root, settings, s3, proxy)
@@ -638,7 +639,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
             "OB_TRUSTED_PROXIES", "OB_OPERATOR_ALLOW", "OB_GRAFANA_URL",
             "OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY", "COMPOSE_FILE", "COMPOSE_PROFILES",
             "OB_RUSTFS_CONSOLE", "OB_RUSTFS_CONSOLE_ALLOW", "OB_RUSTFS_HOST", "OB_RUSTFS_URL",
-            "OB_RUSTFS_URL_HOST", "OB_RUSTFS_AUTHORITY",
+            "OB_RUSTFS_URL_HOST", "OB_RUSTFS_AUTHORITY", "OB_PLATFORM_SUBNET", "OB_PLATFORM_IP_RANGE",
         )
         lines = env_file.read_text().splitlines()
         for key in saved_keys:

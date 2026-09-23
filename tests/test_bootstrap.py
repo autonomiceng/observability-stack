@@ -351,6 +351,8 @@ class BootstrapTests(unittest.TestCase):
         self.env.write_text('OB_ACCESS_MODE=proxy\nOB_TRUSTED_PROXIES=192.0.2.2\nOB_SCHEME=https\nOB_HTTP_PORT=18180\nOB_HTTPS_PORT=18543\n')
         self.render()
         self.assertNotIn('OB_PUBLIC_PORT_SUFFIX=:', self.env.read_text())
+        # The resolved allocation is saved so later runs validate the same network.
+        self.assertIn('OB_PLATFORM_SUBNET=172.30.0.0/24\nOB_PLATFORM_IP_RANGE=172.30.0.128/25', self.env.read_text())
 
     def test_access_defaults_and_invalid_configuration(self):
         for mode, expected in [("local", "http"), ("public", "https"), ("proxy", "https")]:
