@@ -163,6 +163,127 @@ class BootstrapTests(unittest.TestCase):
             self.assertNotIn(private, json.dumps(doc))
         self.assertEqual(set(doc["images"]), set(bootstrap.images(compose)))
 
+    def installation(self):
+        """A rendered installation whose bootstrap runs from this temporary checkout."""
+        self.render()
+        return patch.object(bootstrap, "__file__", str(self.root / "scripts" / "bootstrap.py"))
+
+    def compose_runner(self, selected, on_up=None):
+        """Answer Compose config like a file where only `selected` services are outside profiles."""
+        base = runner_with()
+        refs = bootstrap.images(self.root / "compose.yaml")
+
+        def run(argv, **options):
+            if argv[:2] == ["docker", "compose"] and argv[-3:] == ["config", "--format", "json"]:
+                base.calls.append(argv)
+                every = argv[-5:-3] == ["--profile", "*"]
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"services": {
+                    name: {"image": ref} for name, ref in refs.items() if every or name in selected}}), "")
+            if on_up and argv[:2] == ["docker", "compose"] and "up" in argv:
+                on_up()
+            return base(argv, **options)
+
+        run.calls = base.calls
+        return run
+
+    def test_status_document_is_the_closed_v2_schema_from_compose_config(self):
+        refs = {
+            "caddy": "caddy:2.11.4@sha256:" + "a" * 64,
+            "grafana": "registry.test:5000/grafana/grafana:13.2.2",
+            "alloy": "grafana/alloy:v1.19.2@sha256:" + "b" * 64,
+            "loki": "mirror.test/grafana/loki@sha256:" + "c" * 64,
+            "mimir": "grafana/mimir:3.2.1-rc.1",
+            "tempo": "grafana/tempo:latest",
+            "rustfs": "rustfs/rustfs:1.0.0", "rustfs-init": "rustfs/rustfs:1.0.0",
+        }
+        services = {name: {"image": ref, "environment": {"OB_S3_SECRET_KEY": "private-secret"}}
+                    for name, ref in refs.items()}
+        backups = self.root / "backups"
+        for stamp, at in (("20260921T030000000000Z", "2026-09-21T03:00:00.5+00:00"),
+                          ("20260922T030000000000Z", "2026-09-22T05:00:00+02:00")):
+            (backups / stamp).mkdir(parents=True)
+            (backups / stamp / "manifest.json").write_text(json.dumps({"timestamp": at}))
+        (backups / "20260923T030000000000Z").mkdir()  # incomplete: no manifest
+        (backups / "20260924T030000000000Z").mkdir()
+        (backups / "20260924T030000000000Z" / "manifest.json").write_text("{")  # unreadable
+        settings = {"OB_PUBLIC_DOMAIN": "observe.test", "COMPOSE_PROFILES": "s3", "OB_RUSTFS_CONSOLE": "true",
+                    "OB_BACKUP_DIR": "./data/backups", "OB_ALERTS": "placeholder",
+                    "OB_GATEWAY_URL": "https://gateway.test"}
+        bootstrap.access_config(settings)
+        doc = bootstrap.status_document(services, services, settings, backups, "2026-09-23T16:00:00Z")
+        text = json.dumps(doc)
+        for private in ("private-secret", "sha256", "gateway.test"):
+            self.assertNotIn(private, text)
+        self.assertEqual(set(doc), {"contract", "stack", "configuredAt", "components", "features"})
+        self.assertEqual((doc["contract"], doc["stack"], doc["configuredAt"]), (2, "observability", "2026-09-23T16:00:00Z"))
+        self.assertEqual(doc["features"], {"backups": {"configured": True, "lastCheckpointAt": "2026-09-22T03:00:00Z"},
+                                           "alerts": {"configured": False}})
+        self.assertEqual([c["id"] for c in doc["components"]],
+                         ["caddy", "grafana", "alloy", "loki", "mimir", "tempo", "rustfs"])
+        fields = {"id", "name", "kind", "enabled", "image", "version", "health"}
+        for component in doc["components"]:
+            with self.subTest(component=component["id"]):
+                self.assertTrue(fields <= set(component) <= fields | {"url"})
+                self.assertRegex(component["id"], r"^[a-z][a-z0-9-]{0,31}$")
+                self.assertIn(component["kind"], ("app", "datastore", "gateway", "collector", "runtime"))
+                self.assertIs(component["enabled"], True)
+                self.assertEqual(component["health"], "/health/" + component["id"])
+                self.assertEqual(component["image"], refs[component["id"]].split("@")[0])
+        by_id = {c["id"]: c for c in doc["components"]}
+        self.assertEqual({key: c["version"] for key, c in by_id.items()}, {
+            "caddy": "2.11.4", "grafana": "13.2.2", "alloy": "v1.19.2", "loki": None,
+            "mimir": "3.2.1-rc.1", "tempo": None, "rustfs": "1.0.0"})
+        self.assertEqual({key: c["url"] for key, c in by_id.items() if "url" in c}, {
+            "grafana": "http://grafana.observe.test", "rustfs": "http://rustfs.observe.test"})
+        # Webhook or email with SMTP configures delivery; the placeholder does not.
+        for delivery in ({"OB_ALERT_WEBHOOK_URL": "https://hooks.test/secret-path"},
+                         {"OB_ALERT_EMAIL": "ops@observe.test", "OB_SMTP_URL": "smtps://user:pw@smtp.test:465"}):
+            with self.subTest(delivery=delivery):
+                doc = bootstrap.status_document({}, {}, settings | delivery, self.root / "absent", "x")
+                self.assertEqual(doc["features"], {"backups": {"configured": True, "lastCheckpointAt": None},
+                                                   "alerts": {"configured": True}})
+                self.assertNotIn("secret-path", json.dumps(doc))
+                self.assertNotIn("pw@", json.dumps(doc))
+
+    def test_status_marks_services_outside_selected_profiles_disabled(self):
+        written = []
+        runner = self.compose_runner(selected={"caddy", "grafana", "alloy", "loki", "mimir", "tempo"})
+        with self.installation(), patch.object(bootstrap, "wait_ready"), \
+             patch.object(bootstrap, "write_status", side_effect=lambda state, doc: written.append(doc)):
+            self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner), 0)
+        configs = [call for call in runner.calls if call[-3:] == ["config", "--format", "json"]]
+        self.assertEqual([call[-5:-3] == ["--profile", "*"] for call in configs], [True, False])
+        self.assertEqual({c["id"]: c["enabled"] for c in written[0]["components"]},
+                         {name: name != "rustfs" for name, *_ in bootstrap.COMPONENTS})
+
+    def test_status_is_written_atomically_and_only_after_readiness(self):
+        console = self.root / "data" / "console"
+        public = console / "status.json"
+
+        def up():
+            # The mount exists before Compose starts, or Docker creates it as root.
+            self.assertTrue(console.is_dir())
+            self.assertFalse(public.exists(), "status published before readiness")
+
+        with self.installation():
+            for failure in (bootstrap.Refused("not_ready", "grafana"), None):
+                runner = self.compose_runner({name for name, *_ in bootstrap.COMPONENTS}, on_up=up)
+                with self.subTest(failure=failure), patch.object(bootstrap, "wait_ready", side_effect=failure):
+                    if failure:
+                        with self.assertRaises(bootstrap.Refused):
+                            bootstrap.bootstrap(["--template", str(self.template)], runner=runner)
+                        self.assertFalse(public.exists())
+                    else:
+                        self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner), 0)
+                    self.assertTrue(any("up" in call for call in runner.calls))
+        document = json.loads(public.read_text())
+        self.assertEqual((document["contract"], document["stack"]), (2, "observability"))
+        self.assertEqual(public.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(sorted(p.name for p in console.iterdir()), ["alerts-degraded.json", "links.json", "status.json"])
+        with patch.object(bootstrap.os, "replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            bootstrap.write_status(self.root / "data", {"contract": 2, "partial": True})
+        self.assertEqual(json.loads(public.read_text()), document)
+
     def test_installation_state_follows_compose_project_name(self):
         found = bootstrap.installation_state(
             self.root, self.root / "missing",
@@ -196,8 +317,7 @@ class BootstrapTests(unittest.TestCase):
             selected = bootstrap.bootstrap.__defaults__[0]
             selected(['docker', 'network', 'inspect', 'test'])
             bootstrap.compose_up(self.root, self.env, selected)
-            selected(['python3', 'status_observer.py'], timeout=120)
-        self.assertEqual([row['timeout'] for row in options], [60, 900, 120])
+        self.assertEqual([row['timeout'] for row in options], [60, 900])
         with patch.object(bootstrap, 'bootstrap', side_effect=subprocess.TimeoutExpired(['private'], 60)), \
                 patch('sys.stderr', new_callable=io.StringIO) as error:
             self.assertEqual(bootstrap.main(), 3)
@@ -689,7 +809,8 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn("# Retain operator selection\nCOMPOSE_FILE=" + selection + "\n", self.env.read_text())
             calls = [call for call in run.calls if call[:2] == ["docker", "compose"] and
                      ("config" in call or "up" in call)]
-            self.assertEqual(len(calls), 2)
+            # Every service's config, the selected services' config, then up.
+            self.assertEqual(len(calls), 3)
             for call in calls:
                 self.assertEqual([call[i + 1] for i, arg in enumerate(call) if arg == "-f"],
                                  [str(self.root / "compose.yaml"), str(custom), str(self.root / "compose.proxy.yaml")])

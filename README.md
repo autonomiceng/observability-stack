@@ -34,7 +34,7 @@ Bootstrap writes `.env` with a generated Grafana admin password, creates or vali
 
 | URL | What |
 | --- | --- |
-| `http://localhost/` | Console: links and live health |
+| `http://localhost/` | Console: links, live health, configured versions; `/status.json` is the same data for machines |
 | `http://grafana.localhost/` | Grafana. User `admin`, password in `.env` |
 
 Open Explore, pick Loki, and query `{compose_project="observability-stack"}`. Your own logs are already there.
@@ -85,7 +85,7 @@ Each runs alone. Shared conventions are in [docs/conventions.md](docs/convention
 ## Day two
 
 - [Ingress and access modes](docs/operations/ingress.md)
-- [Public status observations](docs/operations/status.md)
+- [Status document](docs/operations/maintenance.md#status-document)
 - [Maintenance and version bumps](docs/operations/maintenance.md)
 - [Host sizing and OOM recovery](docs/operations/capacity.md)
 - [Disk-full recovery](docs/operations/disk-full.md)

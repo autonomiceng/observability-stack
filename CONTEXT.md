@@ -30,10 +30,17 @@ The single published entry that serves the Stack Console and routes application 
 _Avoid_: Collector, mesh
 
 **Stack Console**:
-The unauthenticated page with application links, readiness and configured versions.
-Its public `/status.json` also exposes allowlisted observed versions and image digests
-in every access mode.
+The unauthenticated page with application links, readiness and the configured versions
+from the Status Document.
 _Avoid_: Dashboard, admin UI
+
+**Status Document**:
+The public Status v2 file bootstrap writes after readiness and the Stack Gateway serves at
+`/status.json` in every access mode: each component's configured image and version, whether
+the selected profiles enable it, its health path, application origins, whether backup and
+alert delivery are configured, and the newest Checkpoint time at that bootstrap. It records
+configuration, never observed runtime state.
+_Avoid_: Status observation, versions file
 
 **Platform Network**:
 The trusted Docker network shared by sibling stacks on one host for ingress and collection, with the

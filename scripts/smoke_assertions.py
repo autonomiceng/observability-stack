@@ -62,8 +62,7 @@ def check(env_file: Path, origin: str, project: str) -> None:
     settings = {match['key']: bootstrap.unquote(match['value']) for match in map(bootstrap.ENV_LINE.match, lines) if match}
     check_access(env_file, settings)
     check_rustfs_console(settings, env_file)
-    from smoke_status import check as check_status
-    check_status(env_file, settings)
+    check_status(settings)
 
     for service in ('grafana', 'loki', 'tempo', 'mimir', 'alloy'):
         get(base + '/health/' + service)
@@ -71,8 +70,7 @@ def check(env_file: Path, origin: str, project: str) -> None:
     page = get(base + '/')
     assert 'Observability Stack' in page
     assert re.search(r'<li data-optional-link="rustfs"[^>]*\shidden', page), 'optional console card must default hidden'
-    assert 'grafana' in json.loads(get(base + '/versions.json'))['images']
-    print('ok: console and versions', flush=True)
+    print('ok: console', flush=True)
 
     datasources = api('/api/datasources')
     assert {(ds['uid'], ds['type']) for ds in datasources} == {('mimir', 'prometheus'), ('loki', 'loki'), ('tempo', 'tempo')}
@@ -153,6 +151,41 @@ def check_proxy_access(env_file, settings):
             expected_links['rustfs'] = bootstrap.rustfs_origin(settings)
         assert json.loads(body) == expected_links
     print('ok: exact external authority, internal Grafana, same-host sibling ports, root health, links, auth and metrics denial', flush=True)
+
+
+def check_status(settings):
+    """Status v2 written by bootstrap and served publicly; the version 1 route is gone."""
+    def request(path, method='GET'):
+        connection = http.client.HTTPConnection('127.0.0.1', int(settings['OB_HTTP_PORT']), timeout=10)
+        try:
+            connection.request(method, path, headers={'Host': settings['OB_PUBLIC_DOMAIN']})
+            response = connection.getresponse()
+            return response.status, response.headers, response.read()
+        finally:
+            connection.close()
+
+    status, headers, body = request('/status.json')
+    assert status == 200, status
+    assert headers['Content-Type'] == 'application/json' and headers['Cache-Control'] == 'no-store', headers
+    doc = json.loads(body)
+    assert set(doc) == {'contract', 'stack', 'configuredAt', 'components', 'features'}, sorted(doc)
+    assert doc['contract'] == 2 and doc['stack'] == 'observability', doc
+    assert [c['id'] for c in doc['components']] == [name for name, *_ in bootstrap.COMPONENTS], doc['components']
+    s3 = 's3' in settings.get('COMPOSE_PROFILES', '').split(',')
+    fields = {'id', 'name', 'kind', 'enabled', 'image', 'version', 'health'}
+    for c in doc['components']:
+        assert fields <= set(c) <= fields | {'url'}, c
+        assert c['enabled'] is (c['id'] != 'rustfs' or s3) and c['version'] and '@' not in c['image'], c
+        if c['enabled']:
+            assert request(c['health'])[0] == 200, c['health']
+    assert doc['features'] == {'backups': {'configured': True, 'lastCheckpointAt': None},
+                               'alerts': {'configured': False}}, doc['features']
+    status, _, body = request('/status.json', 'HEAD')
+    assert (status, body) == (200, b''), status
+    status, headers, body = request('/status.json', 'POST')
+    assert (status, headers['Allow'], body) == (405, 'GET, HEAD', b''), status
+    assert request('/versions.json')[0] == 404
+    print('ok: status.json is Status v2, its health paths answer, /versions.json is gone', flush=True)
 
 
 def check_rustfs_console(settings, env_file):

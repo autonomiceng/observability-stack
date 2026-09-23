@@ -32,8 +32,6 @@ from functools import partial
 from pathlib import Path
 from typing import Callable
 
-from status_io import Unavailable, now, task_record
-
 PROJECT = "observability-stack"
 NETWORK = "platform"
 # Platform Network allocation shared by every stack (docs/conventions.md). Edge's reserved
@@ -53,6 +51,19 @@ SECRETS: dict[str, int] = {
 MANAGED = set(SECRETS)
 IMAGE_LINE = re.compile(r"^\s+image:\s+(?P<ref>\S+)\s*$")
 ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
+# Status v2 components (docs/conventions.md): the contract's stable ID, which is also the
+# Compose service, then display name and kind.
+COMPONENTS = (
+    ("caddy", "Caddy", "gateway"),
+    ("grafana", "Grafana", "app"),
+    ("alloy", "Alloy", "collector"),
+    ("loki", "Loki", "datastore"),
+    ("mimir", "Mimir", "datastore"),
+    ("tempo", "Tempo", "datastore"),
+    ("rustfs", "RustFS", "datastore"),
+)
+# Every component ships dotted numeric release tags, some with a `v` or a pre-release suffix.
+RELEASE_TAG = r"v?[0-9]+(?:\.[0-9]+)+(?:-[A-Za-z0-9.]+)?"
 
 
 class Refused(Exception):
@@ -163,9 +174,10 @@ def images(compose: Path) -> dict[str, str]:
 
 
 def write_versions(root: Path, compose: Path, settings: dict[str, str] | None = None, *, services: dict) -> None:
+    """Restore's version record (scripts/checkpoint.py). Caddy no longer serves it."""
     state = Path((settings or {}).get("OB_STATE_DIR", str(root / "data")))
-    console = (state if state.is_absolute() else root / state) / "console"
-    console.mkdir(mode=0o755, parents=True, exist_ok=True)
+    state = state if state.is_absolute() else root / state
+    console = console_dir(state)
     tags = {}
     for service in images(compose):
         ref = services.get(service, {}).get("image", "")
@@ -186,12 +198,78 @@ def write_versions(root: Path, compose: Path, settings: dict[str, str] | None = 
         },
     }
     (console / "versions.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    settings = settings or {}
+    write_links(state, settings or {})
+
+
+def console_dir(state: Path) -> Path:
+    """Caddy mounts this directory; Docker would create a missing one owned by root."""
+    console = state / "console"
+    console.mkdir(mode=0o755, parents=True, exist_ok=True)
+    return console
+
+
+def console_links(settings: dict[str, str]) -> dict[str, str]:
     links = {"grafana": grafana_origin(settings)}
-    links.update({key: value for key, value in doc["links"].items() if value})
+    links.update({key: settings[name] for key, name in (("gateway", "OB_GATEWAY_URL"), ("backplane", "OB_BACKPLANE_URL"))
+                  if settings.get(name)})
     if settings.get("OB_RUSTFS_CONSOLE") == "true":
         links["rustfs"] = rustfs_origin(settings)
-    (console / "links.json").write_text(json.dumps(links) + "\n", encoding="utf-8")
+    return links
+
+
+def write_links(state: Path, settings: dict[str, str]) -> None:
+    (console_dir(state) / "links.json").write_text(json.dumps(console_links(settings)) + "\n", encoding="utf-8")
+
+
+def utc(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def last_checkpoint(backups: Path) -> str | None:
+    """Newest readable Checkpoint manifest time, or None when none can be read."""
+    times = []
+    try:
+        paths = [path for path in backups.iterdir() if re.fullmatch(r"[0-9]{8}T[0-9]{12}Z", path.name)]
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            times.append(datetime.fromisoformat(json.loads((path / "manifest.json").read_text())["timestamp"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return utc(max(times)) if times else None
+
+
+def status_document(available: dict, selected: dict, settings: dict[str, str], backups: Path,
+                    configured_at: str) -> dict:
+    """The public Status v2 document: configured images and origins, never secrets."""
+    links = console_links(settings)
+    components = []
+    for component, name, kind in COMPONENTS:
+        if component not in available:
+            continue
+        image = available[component]["image"].split("@", 1)[0]
+        tag = image.rsplit(":", 1)[1] if ":" in image.rsplit("/", 1)[-1] else ""
+        record = {"id": component, "name": name, "kind": kind, "enabled": component in selected,
+                  "image": image,
+                  "version": tag if re.fullmatch(RELEASE_TAG, tag) else None,
+                  "health": "/health/" + component}
+        if component in links:
+            record["url"] = links[component]
+        components.append(record)
+    return {"contract": 2, "stack": "observability", "configuredAt": configured_at, "components": components,
+            "features": {"backups": {"configured": bool(settings.get("OB_BACKUP_DIR")),
+                                     "lastCheckpointAt": last_checkpoint(backups)},
+                         "alerts": {"configured": alert_config(settings)[0] != "placeholder"}}}
+
+
+def write_status(state: Path, document: dict) -> None:
+    console = console_dir(state)
+    temporary = console / ".status.json.tmp"
+    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    # Caddy reads the mount as another user; replace the file whole so it never sees a partial one.
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, console / "status.json")
 
 
 def platform_allocation(settings) -> tuple[str, str]:
@@ -504,6 +582,13 @@ def compose_up(root: Path, env_file: Path, runner: Runner, s3: bool = False, pro
         raise Refused("compose_up_failed", (result.stderr or result.stdout).strip()[-2000:])
 
 
+def compose_services(runner: Runner, command: list[str]) -> dict:
+    result = runner(command + ["config", "--format", "json"])
+    if result.returncode:
+        raise Refused("compose_config_failed", "inspect Compose configuration privately")
+    return json.loads(result.stdout)["services"]
+
+
 class LocalHTTPSConnection(http.client.HTTPSConnection):
     def connect(self):
         # Dial loopback while verifying the certificate and sending SNI for the public host.
@@ -542,13 +627,6 @@ def wait_ready(url: str, timeout: float = 120.0, host: str | None = None, ca_dat
     raise Refused("not_ready", f"{url}: {last}")
 
 
-def record_bootstrap(state_dir, root, env_file, started, state):
-    try:
-        task_record(state_dir, root, env_file, started, state)
-    except (OSError, Unavailable):
-        print('Bootstrap status record unavailable; inspect status storage privately.', file=sys.stderr)
-
-
 # Bound bootstrap commands without changing the shared runner used for bulk checkpoint I/O.
 def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int:
     parser = argparse.ArgumentParser(prog="bootstrap.py", description=__doc__.splitlines()[0])
@@ -557,11 +635,9 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
     parser.add_argument("--render-only", action="store_true",
                         help="write the env file, start nothing")
     args = parser.parse_args(argv)
-    started = now()
     root = Path(__file__).resolve().parent.parent
     env_file = (root / args.env_file).resolve()
     template = (root / args.template).resolve()
-    compose = root / "compose.yaml"
 
     installation = env_file == (root / ".env").resolve()
     if shutil.which("docker") is None and (installation or not args.render_only):
@@ -630,7 +706,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
             # record it instead of generating a different one.
             fresh.update({k: os.environ[k] for k in missing if os.environ.get(k)})
             write_env(env_file, lines, template, fresh)
-        # The host observer selects the saved env file without shell overrides.
+        # Later Compose and Checkpoint commands read these selections from the saved env file.
         settings['COMPOSE_PROJECT_NAME'] = project
         saved_keys = (
             "COMPOSE_PROJECT_NAME", "OB_STATE_DIR", "OB_VOLUME_PREFIX",
@@ -672,67 +748,52 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
             print(json.dumps({"env": str(env_file), "project": project, "generated": sorted(missing)}))
             return 0
 
-        # Preserve ordinary state-root permissions before private status storage is made.
-        state_dir.mkdir(parents=True, exist_ok=True)
-        # Record only after env/access/storage validation. Abruptly terminated runs remain unknown.
-        record_bootstrap(state_dir, root, env_file, started, 'unknown')
-        try:
-            # Profiles cannot replace another service's config mount. Record the matching
-            # override so later plain docker compose commands use the same storage mode.
-            data_dir.mkdir(parents=True, exist_ok=True)
-            marker.write_text(mode + "\n")
-            (state_dir / "textfile").mkdir(parents=True, exist_ok=True)
-            backup_dir = Path(settings.get("OB_BACKUP_DIR", "./data/backups"))
-            if not backup_dir.is_absolute():
-                backup_dir = root / backup_dir
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            resolved = runner(["docker", "compose", "--project-directory", str(root),
-                               "--env-file", str(env_file),
-                               *[arg for name in files for arg in ("-f", str(root / name))],
-                               *(["--profile", "s3"] if s3 else []),
-                               "config", "--format", "json"])
-            if resolved.returncode:
-                raise Refused("compose_config_failed", "inspect Compose configuration privately")
-            write_versions(root, compose, settings, services=json.loads(resolved.stdout)["services"])
-            delivery = write_provisioning(root, state_dir, settings)
+        configured_at = utc(datetime.now(timezone.utc))
+        # Profiles cannot replace another service's config mount. Record the matching
+        # override so later plain docker compose commands use the same storage mode.
+        data_dir.mkdir(parents=True, exist_ok=True)
+        marker.write_text(mode + "\n")
+        (state_dir / "textfile").mkdir(parents=True, exist_ok=True)
+        backup_dir = Path(settings.get("OB_BACKUP_DIR", "./data/backups"))
+        if not backup_dir.is_absolute():
+            backup_dir = root / backup_dir
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        command = ["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
+                   *[arg for name in files for arg in ("-f", str(root / name))]]
+        # Every service, then those the selected profiles enable.
+        document = status_document(compose_services(runner, command + ["--profile", "*"]),
+                                   compose_services(runner, command + (["--profile", "s3"] if s3 else [])),
+                                   settings, backup_dir, configured_at)
+        write_links(state_dir, settings)
+        delivery = write_provisioning(root, state_dir, settings)
 
-            ensure_network(runner, settings.get("OB_PLATFORM_NETWORK", NETWORK), *allocation)
-            ensure_volumes(runner, prefix, project, s3)
-            compose_up(root, env_file, runner, s3, proxy, files)
-            scheme = settings.get("OB_SCHEME", "http")
-            domain = settings.get("OB_PUBLIC_DOMAIN", "localhost")
-            origin = domain + settings.get("OB_PUBLIC_PORT_SUFFIX", "")
+        ensure_network(runner, settings.get("OB_PLATFORM_NETWORK", NETWORK), *allocation)
+        ensure_volumes(runner, prefix, project, s3)
+        compose_up(root, env_file, runner, s3, proxy, files)
+        scheme = settings.get("OB_SCHEME", "http")
+        domain = settings.get("OB_PUBLIC_DOMAIN", "localhost")
+        origin = domain + settings.get("OB_PUBLIC_PORT_SUFFIX", "")
+        for service in ("grafana", "loki", "tempo", "mimir", "alloy"):
+            wait_ready(f"{local_origin(settings)}/health/{service}", host=domain)
+        if settings["OB_ACCESS_MODE"] == "public":
+            wait_ready(f"{local_origin(settings)}/login", host=settings["OB_GRAFANA_HOST"])
+        if settings["OB_ACCESS_MODE"] == "local":
+            certificate = runner(["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
+                                  "exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt"])
+            if certificate.returncode:
+                raise Refused("local_ca_unavailable", "cannot read this installation's public CA certificate")
             for service in ("grafana", "loki", "tempo", "mimir", "alloy"):
-                wait_ready(f"{local_origin(settings)}/health/{service}", host=domain)
-            if settings["OB_ACCESS_MODE"] == "public":
-                wait_ready(f"{local_origin(settings)}/login", host=settings["OB_GRAFANA_HOST"])
-            if settings["OB_ACCESS_MODE"] == "local":
-                certificate = runner(["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
-                                      "exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt"])
-                if certificate.returncode:
-                    raise Refused("local_ca_unavailable", "cannot read this installation's public CA certificate")
-                for service in ("grafana", "loki", "tempo", "mimir", "alloy"):
-                    wait_ready(f"{local_origin(settings, 'https')}/health/{service}", host=domain, ca_data=certificate.stdout)
-            record_bootstrap(state_dir, root, env_file, started, 'healthy')
-            try:
-                initial = runner([sys.executable, str(root / 'scripts/status_observer.py'),
-                                  '--checkout', str(root), '--env-file', str(env_file)], timeout=120)
-                if initial.returncode:
-                    print('Initial status observation failed; retry the observer privately.', file=sys.stderr)
-            except (OSError, subprocess.SubprocessError):
-                print('Initial status observation failed; retry the observer privately.', file=sys.stderr)
-            print(json.dumps({
-                "status": "degraded" if delivery == "placeholder" else "ready",
-                "problems": ["alert_delivery_placeholder"] if delivery == "placeholder" else [],
-                "console": f"{scheme}://{origin}/",
-                "grafana": grafana_origin(settings) + "/",
-                "grafanaLogin": "admin",
-                "next": "Log in to Grafana with admin and OB_GRAFANA_ADMIN_PASSWORD from .env; open Stacks or Explore.",
-            }))
-            return 0
-        except BaseException:
-            record_bootstrap(state_dir, root, env_file, started, 'unavailable')
-            raise
+                wait_ready(f"{local_origin(settings, 'https')}/health/{service}", host=domain, ca_data=certificate.stdout)
+        write_status(state_dir, document)
+        print(json.dumps({
+            "status": "degraded" if delivery == "placeholder" else "ready",
+            "problems": ["alert_delivery_placeholder"] if delivery == "placeholder" else [],
+            "console": f"{scheme}://{origin}/",
+            "grafana": grafana_origin(settings) + "/",
+            "grafanaLogin": "admin",
+            "next": "Log in to Grafana with admin and OB_GRAFANA_ADMIN_PASSWORD from .env; open Stacks or Explore.",
+        }))
+        return 0
 
 
 def main() -> int:

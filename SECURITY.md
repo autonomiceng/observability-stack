@@ -21,8 +21,9 @@ Alloy has privileged host access, host filesystem mounts and the Docker socket f
 A socket mounted read-only still permits Docker API mutations. Treat Alloy and all members of
 `platform` as trusted host workloads; the internal Alloy HTTP/OTLP listeners are not public
 APIs. The console, readiness routes and `/status.json` are unauthenticated and carry no
-credentials. In public mode `/status.json` exposes allowlisted observed versions and image
-digests to the internet; see the [status runbook](docs/operations/status.md).
+credentials. In public mode `/status.json` exposes configured image references without
+digests, versions and application origins to the internet; see the
+[status document](docs/operations/maintenance.md#status-document).
 
 Protect `.env` and volume backups. Grafana credentials initialize its database once; changing
 `.env` later is not a password rotation. Logs and traces can contain sensitive application
