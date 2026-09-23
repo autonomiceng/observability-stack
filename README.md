@@ -11,7 +11,7 @@ Logs, metrics and traces for everything on your host, in one Grafana. Self-hoste
 
 You run a few Docker stacks on one machine and want to see what they are doing without SSHing in and tailing logs. This stack runs the Grafana LGTM set: Loki for logs, Mimir for metrics, Tempo for traces, and Alloy as the one collector that feeds them.
 
-Alloy discovers host containers, excluding disposable smoke/drill Compose logs and ships its logs with the Compose project and service as labels. Collect gateway metrics with `OB_SCRAPE_GATEWAY=true`, or Edge metrics with `OB_SCRAPE_EDGE=true` after allowing the scraper address at Edge. Both are off by default, so this stack starts on its own. Backplane scraping is off until `OB_BACKPLANE_OPERATIONS_TOKEN` is set. Self, container, host filesystem, textfile and Backend metrics are always scraped. Grafana comes with the datasources wired, a starter dashboard and a few alert rules.
+Alloy discovers host containers, excluding disposable smoke/drill Compose logs and ships its logs with the Compose project and service as labels. Collect gateway metrics with `OB_SCRAPE_GATEWAY=true`, Edge metrics with `OB_SCRAPE_EDGE=true` after allowing the scraper address at Edge, or backplane metrics with `OB_SCRAPE_BACKPLANE=true` and `OB_BACKPLANE_OPERATIONS_TOKEN` set to its operations token. All three are off by default, so this stack starts on its own. Self, container, host filesystem, textfile and Backend metrics are always scraped. Grafana comes with the datasources wired, a starter dashboard and a few alert rules.
 
 Everything stores to local volumes by default. An optional profile moves the backends to S3 on RustFS.
 
@@ -77,7 +77,7 @@ see [image experiments](docs/operations/maintenance.md#image-experiments). Renov
 This is one of four repos that deploy the same way and work together on one host:
 
 - [llm-gateway-stack](https://github.com/autonomiceng/llm-gateway-stack): LiteLLM and Langfuse. Sends its logs and metrics here.
-- [agent-backplane](https://github.com/autonomiceng/agent-backplane): shared state, queues and approvals for agents. Scraped here when a token is set.
+- [agent-backplane](https://github.com/autonomiceng/agent-backplane): shared state, queues and approvals for agents. Scraped here when `OB_SCRAPE_BACKPLANE=true`.
 - [platform-edge](https://github.com/autonomiceng/platform-edge): one Caddy for ports 80 and 443 when more than one stack shares a host.
 
 Each runs alone. Shared conventions are in [docs/conventions.md](docs/conventions.md).

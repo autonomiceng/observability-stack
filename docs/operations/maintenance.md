@@ -57,7 +57,7 @@ Test delivery from Grafana after provisioning.
 | Gateway Checkpoint age | `time() - lg_checkpoint_timestamp_seconds{job="llm-gateway-checkpoints"} > bool 93600` for 5m. |
 | Gateway Checkpoint failure | `lg_checkpoint_success{job="llm-gateway-checkpoints"} == bool 0` for 5m. |
 | Gateway archiver failure | `increase(pg_stat_archiver_failed_count{job="llm-gateway-postgres"}[15m]) > bool 0` for 5m. |
-| Scrape target down | `up{job=~"llm-gateway(-valkey\|-postgres\|-checkpoints)?\|backplane"} == bool 0` for 5m. `bool` returns 1 for a failed target into the > 0 threshold. An empty backplane token or `OB_SCRAPE_GATEWAY=false` removes that target. |
+| Scrape target down | `up{job=~"llm-gateway(-valkey\|-postgres\|-checkpoints)?\|backplane"} == bool 0` for 5m. `bool` returns 1 for a failed target into the > 0 threshold. `OB_SCRAPE_BACKPLANE=false` or `OB_SCRAPE_GATEWAY=false` removes that target. |
 
 Container restart detection is pending a producer for
 `container_started_at_seconds{compose_project,service,container}` sourced from Docker
@@ -82,9 +82,11 @@ stack_checkpoint_last_success_timestamp_seconds{stack="observability-stack"} 178
 That timestamp is an example, not a heartbeat. Preserve the last success on failure. The
 backplane already exposes its archive gauge on its authenticated `/metrics`. Its existing
 `bp_backup_age_seconds` is also queryable; the shared Checkpoint rule uses the textfile
-contract above. Configure
-`OB_BACKPLANE_OPERATIONS_TOKEN` with the backplane's `BP_OPERATIONS_TOKEN` to enable scraping.
-A configured token with a stopped backplane produces `up{job="backplane"}=0`; Alloy remains ready.
+contract above. Scraping needs both `OB_SCRAPE_BACKPLANE=true` and
+`OB_BACKPLANE_OPERATIONS_TOKEN` set to the backplane's `BP_OPERATIONS_TOKEN`; the token never
+becomes a target label, so Alloy's UI and API do not show it. A token without the boolean
+leaves the target absent. An enabled scrape with an empty token or a stopped backplane
+produces `up{job="backplane"}=0`; Alloy remains ready.
 
 ## Investigating missing data
 

@@ -114,6 +114,7 @@ services:
     environment:
       OB_SCRAPE_EDGE: ${OB_SCRAPE_EDGE:-false}
       OB_SCRAPE_GATEWAY: ${OB_SCRAPE_GATEWAY:-false}
+      OB_SCRAPE_BACKPLANE: ${OB_SCRAPE_BACKPLANE:-false}
       OB_BACKPLANE_OPERATIONS_TOKEN: ${OB_BACKPLANE_OPERATIONS_TOKEN:-}
     volumes:
       - ./config.alloy:/etc/alloy/config.alloy:ro

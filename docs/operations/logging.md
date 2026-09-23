@@ -44,8 +44,8 @@ remains enabled as well. No file writer or remote log sink is used.
 Host Docker discovery already collects Platform Edge's stdout/stderr, including Caddy JSON
 access logs. Enable access logging in Edge itself and use a readable driver there. No Edge
 container, metrics endpoint, Alloy address or remote log service is a required dependency
-of this deployment or of the Edge producer. `OB_SCRAPE_GATEWAY=false` and an empty backplane
-token keep sibling metrics targets absent by default.
+of this deployment or of the Edge producer. `OB_SCRAPE_GATEWAY=false` and `OB_SCRAPE_BACKPLANE=false`
+keep sibling metrics targets absent by default.
 
 Loki labels remain `job`, `compose_project`, `service` and `container`, plus Docker stream
 metadata. Query Edge with `{job="docker",compose_project="platform-edge"} | json`, adjusting

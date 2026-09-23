@@ -145,12 +145,13 @@ prometheus.scrape "gateway_checkpoints" {
 discovery.relabel "backplane" {
   targets = [{
     "__address__" = "bp-server:3000",
-    "__token_set" = sys.env("OB_BACKPLANE_OPERATIONS_TOKEN"),
+    "__enabled" = sys.env("OB_SCRAPE_BACKPLANE"),
   }]
+  // Fail closed: only an exact "true" sends the bearer token.
   rule {
-    source_labels = ["__token_set"]
-    regex = "^$"
-    action = "drop"
+    source_labels = ["__enabled"]
+    regex = "true"
+    action = "keep"
   }
 }
 
