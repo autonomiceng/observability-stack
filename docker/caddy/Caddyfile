@@ -142,10 +142,15 @@
 		rewrite * /-/ready
 		import health alloy:12345 alloy:12345
 	}
-	# Without the s3 profile no rustfs host resolves; consumers never probe a disabled component.
 	handle /health/rustfs {
-		rewrite * /health/ready
-		import health rustfs:9000 rustfs:9000
+		@disabled expression `!'{$OB_COMPOSE_PROFILES}'.matches('(^|,)s3(,|$)')`
+		handle @disabled {
+			respond "" 404
+		}
+		handle {
+			rewrite * /health/ready
+			import health rustfs:9000 rustfs:9000
+		}
 	}
 	handle /health/gateway {
 		rewrite * /health/litellm

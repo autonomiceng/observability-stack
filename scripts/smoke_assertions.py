@@ -176,8 +176,7 @@ def check_status(settings):
     for c in doc['components']:
         assert fields <= set(c) <= fields | {'url'}, c
         assert c['enabled'] is (c['id'] != 'rustfs' or s3) and c['version'] and '@' not in c['image'], c
-        if c['enabled']:
-            assert request(c['health'])[0] == 200, c['health']
+        assert request(c['health'])[0] == (200 if c['enabled'] else 404), c['health']
     assert doc['features'] == {'backups': {'configured': True, 'lastCheckpointAt': None},
                                'alerts': {'configured': False}}, doc['features']
     status, _, body = request('/status.json', 'HEAD')

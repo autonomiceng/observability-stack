@@ -1,11 +1,12 @@
 #!/bin/sh
 # Retire the version 1 status timer and its records (Status v2 upgrade step). Safe to rerun.
+# Usage: retire-status-timer.sh [env-file], the env file bootstrap used (default: .env).
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 name=observability-status
-# The records live under the installation's OB_STATE_DIR, as bootstrap saved it in .env.
-state=$(sed -n 's/^OB_STATE_DIR=//p' "$root/.env" 2>/dev/null | tail -n 1)
+# The records live under the installation's OB_STATE_DIR, as bootstrap saved it.
+state=$(sed -n 's/^OB_STATE_DIR=//p' "${1:-$root/.env}" 2>/dev/null | tail -n 1)
 state=${state#[\"\']}
 state=${state%[\"\']}
 state=${state:-./data}

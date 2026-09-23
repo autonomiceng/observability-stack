@@ -16,18 +16,18 @@ class RetireStatusTimerTests(unittest.TestCase):
             subprocess.run(["shellcheck", "--shell=sh", str(SCRIPT)], check=True)
         for present in (("observability-status.service", "observability-status.timer"),
                         ("observability-status.service",)):
-            for state in ("", "'custom state'"):
-                with self.subTest(present=present, state=state):
-                    self.retire_twice(present, state)
+            for state, env_name in (("", ".env"), ("'custom state'", ".env"), ("custom", "operator.env")):
+                with self.subTest(present=present, state=state, env_name=env_name):
+                    self.retire_twice(present, state, env_name)
 
-    def retire_twice(self, present, state):
+    def retire_twice(self, present, state, env_name):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             checkout, home, bin_dir = root / "checkout", root / "home", root / "bin"
             (checkout / "scripts").mkdir(parents=True)
             shutil.copy(SCRIPT, checkout / "scripts")
             # Bootstrap saves OB_STATE_DIR; a relative value resolves from the checkout.
-            (checkout / ".env").write_text(f"OB_STATE_DIR={state}\n" if state else "OB_ACCESS_MODE=local\n")
+            (checkout / env_name).write_text(f"OB_STATE_DIR={state}\n" if state else "OB_ACCESS_MODE=local\n")
             data = checkout / (state.strip("'") or "data")
             units = home / ".config/systemd/user"
             units.mkdir(parents=True)
@@ -50,7 +50,10 @@ done
 """)
             (bin_dir / "systemctl").chmod(0o755)
             env = {"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin"}
-            runs = [subprocess.run(["sh", str(checkout / "scripts/retire-status-timer.sh")], env=env,
+            argv = ["sh", str(checkout / "scripts/retire-status-timer.sh")]
+            if env_name != ".env":
+                argv.append(str(checkout / env_name))
+            runs = [subprocess.run(argv, env=env,
                                    capture_output=True, text=True, check=True) for _ in range(2)]
 
             self.assertEqual(log.read_text().splitlines(), [

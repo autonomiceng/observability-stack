@@ -206,6 +206,8 @@ class BootstrapTests(unittest.TestCase):
         (backups / "20260923T030000000000Z").mkdir()  # incomplete: no manifest
         (backups / "20260924T030000000000Z").mkdir()
         (backups / "20260924T030000000000Z" / "manifest.json").write_text("{")  # unreadable
+        (backups / "20260925T030000000000Z").mkdir()
+        (backups / "20260925T030000000000Z" / "manifest.json").write_text(json.dumps({"timestamp": "2026-09-25T03:00:00"}))
         settings = {"OB_PUBLIC_DOMAIN": "observe.test", "COMPOSE_PROFILES": "s3", "OB_RUSTFS_CONSOLE": "true",
                     "OB_BACKUP_DIR": "./data/backups", "OB_ALERTS": "placeholder",
                     "OB_GATEWAY_URL": "https://gateway.test"}
@@ -283,6 +285,7 @@ class BootstrapTests(unittest.TestCase):
         with patch.object(bootstrap.os, "replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
             bootstrap.write_status(self.root / "data", {"contract": 2, "partial": True})
         self.assertEqual(json.loads(public.read_text()), document)
+        self.assertEqual(sorted(p.name for p in console.iterdir()), ["alerts-degraded.json", "links.json", "status.json"])
 
     def test_installation_state_follows_compose_project_name(self):
         found = bootstrap.installation_state(

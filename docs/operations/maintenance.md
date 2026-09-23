@@ -136,13 +136,14 @@ Liveness comes from `/health/<component>`, status only for clients outside `OB_O
 | `caddy` | Caddy answers |
 | `grafana`, `alloy` | `/api/health`, `/-/ready` |
 | `loki`, `mimir`, `tempo` | `/ready` |
-| `rustfs` | `/health/ready` with the `s3` profile; otherwise 502, and consumers never probe a disabled component |
+| `rustfs` | `/health/ready` with the `s3` profile; otherwise 404 |
 
 Upgrading from the version 1 status timer: run `scripts/retire-status-timer.sh` as the
 installation user, then `python3 scripts/bootstrap.py`. The script disables and removes
 `observability-status.timer` and `.service` from the user's systemd directory, reloads the
 user manager, and deletes `bootstrap.json`, `observer.lock` and the `status` directory under
-the `OB_STATE_DIR` saved in `.env`. It prints each removal and is safe to rerun. Bootstrap
+the `OB_STATE_DIR` saved in `.env`; pass another env file as its argument if bootstrap used
+one. It prints each removal and is safe to rerun. Bootstrap
 then replaces the version 1 `status.json`. `/versions.json` is gone; the Stack Console reads
 `/status.json`.
 

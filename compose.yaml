@@ -32,6 +32,8 @@ services:
       OB_OPERATOR_ALLOW: ${OB_OPERATOR_ALLOW:-127.0.0.1/8 ::1}
       OB_TRUSTED_PROXIES: ${OB_TRUSTED_PROXIES:-172.30.0.2/32}
       OB_GATEWAY_HEALTH_HOST: ${OB_GATEWAY_HEALTH_HOST:-localhost}
+      # Status v2: health paths of components outside the selected profiles answer 404.
+      OB_COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./docker/caddy/console:/srv/console:ro

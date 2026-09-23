@@ -23,6 +23,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -234,9 +235,12 @@ def last_checkpoint(backups: Path) -> str | None:
         return None
     for path in paths:
         try:
-            times.append(datetime.fromisoformat(json.loads((path / "manifest.json").read_text())["timestamp"]))
+            moment = datetime.fromisoformat(json.loads((path / "manifest.json").read_text())["timestamp"])
         except (OSError, ValueError, KeyError, TypeError):
             continue
+        # Checkpoints record UTC offsets; a naive time cannot be ordered against them.
+        if moment.tzinfo:
+            times.append(moment)
     return utc(max(times)) if times else None
 
 
@@ -265,11 +269,16 @@ def status_document(available: dict, selected: dict, settings: dict[str, str], b
 
 def write_status(state: Path, document: dict) -> None:
     console = console_dir(state)
-    temporary = console / ".status.json.tmp"
-    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-    # Caddy reads the mount as another user; replace the file whole so it never sees a partial one.
-    os.chmod(temporary, 0o644)
-    os.replace(temporary, console / "status.json")
+    fd, temporary = tempfile.mkstemp(prefix=".status.json.", dir=console)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(document, indent=2) + "\n")
+        # Caddy reads the mount as another user; replace the file whole so it never sees a partial one.
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, console / "status.json")
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def platform_allocation(settings) -> tuple[str, str]:
