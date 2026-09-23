@@ -66,6 +66,10 @@ done
             self.assertIn("removed", runs[0].stdout)
             self.assertNotIn("removed", runs[1].stdout)
             self.assertIn("no observability-status units", runs[1].stdout)
+            # An unreadable env file could name another installation's records; refuse before any change.
+            missing = subprocess.run(["sh", str(checkout / "scripts/retire-status-timer.sh"), str(root / "absent.env")],
+                                     env=env, capture_output=True, text=True)
+            self.assertEqual((missing.returncode, missing.stdout), (1, ""))
 
 
 if __name__ == "__main__":

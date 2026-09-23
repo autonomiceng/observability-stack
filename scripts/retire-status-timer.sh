@@ -6,7 +6,12 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 name=observability-status
 # The records live under the installation's OB_STATE_DIR, as bootstrap saved it.
-state=$(sed -n 's/^OB_STATE_DIR=//p' "${1:-$root/.env}" 2>/dev/null | tail -n 1)
+env_file=${1:-$root/.env}
+if [ ! -r "$env_file" ]; then
+  echo "cannot read env file: $env_file" >&2
+  exit 1
+fi
+state=$(sed -n 's/^OB_STATE_DIR=//p' "$env_file" | tail -n 1)
 state=${state#[\"\']}
 state=${state%[\"\']}
 state=${state:-./data}
