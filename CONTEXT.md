@@ -36,7 +36,8 @@ in every access mode.
 _Avoid_: Dashboard, admin UI
 
 **Platform Network**:
-The trusted Docker network shared by sibling stacks on one host for ingress and collection.
+The trusted Docker network shared by sibling stacks on one host for ingress and collection, with the
+fixed allocation `172.30.0.0/24` and Platform Edge at the reserved address `172.30.0.2`.
 _Avoid_: Default network, public network
 
 **Local Mode**:

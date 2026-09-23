@@ -16,7 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import bootstrap  # noqa: E402
 
 
-def runner_with(volumes=(), network_exists=True, labelled_volumes=()):
+CONTRACT_IPAM = '[{"Subnet":"172.30.0.0/24","IPRange":"172.30.0.128/25","Gateway":"172.30.0.1"}]'
+
+
+def runner_with(volumes=(), network_exists=True, labelled_volumes=(), ipam=CONTRACT_IPAM, create_fails=False):
     calls = []
 
     def run(argv, **options):
@@ -29,7 +32,10 @@ def runner_with(volumes=(), network_exists=True, labelled_volumes=()):
                 found = volumes
             return subprocess.CompletedProcess(argv, 0, "\n".join(found), "")
         if argv[:3] == ["docker", "network", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0 if network_exists else 1, "", "")
+            exists = network_exists or (create_fails and ["docker", "network", "create"] in [c[:3] for c in calls])
+            return subprocess.CompletedProcess(argv, 0 if exists else 1, ipam if exists else "", "")
+        if argv[:3] == ["docker", "network", "create"] and create_fails:
+            return subprocess.CompletedProcess(argv, 1, "", "network with name platform already exists")
         if argv[:2] == ["docker", "compose"] and "config" in argv:
             refs = bootstrap.images(Path(__file__).resolve().parent.parent / 'compose.yaml')
             return subprocess.CompletedProcess(argv, 0, json.dumps({
@@ -198,13 +204,46 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(json.loads(error.getvalue())['error'], 'docker_timeout')
             self.assertNotIn('private', error.getvalue())
 
-    def test_network_is_created_only_when_missing(self):
+    def test_missing_network_is_created_with_the_configured_allocation(self):
         run = runner_with(network_exists=False)
-        bootstrap.ensure_network(run)
-        self.assertEqual(run.calls[-1][:3], ["docker", "network", "create"])
-        run = runner_with(network_exists=True)
-        bootstrap.ensure_network(run)
+        bootstrap.ensure_network(run, "platform", *bootstrap.platform_allocation(
+            {"OB_PLATFORM_SUBNET": "10.40.0.0/24", "OB_PLATFORM_IP_RANGE": "10.40.0.128/25"}))
+        self.assertEqual(run.calls[-1], ["docker", "network", "create", "--driver", "bridge",
+                                         "--subnet", "10.40.0.0/24", "--ip-range", "10.40.0.128/25",
+                                         "--gateway", "10.40.0.1", "platform"])
+        for values in ({"OB_PLATFORM_SUBNET": "172.30.0.5/24"}, {"OB_PLATFORM_IP_RANGE": "10.0.0.0/25"},
+                       {"OB_PLATFORM_IP_RANGE": "172.30.0.0/25", "OB_TRUSTED_PROXIES": "172.30.0.2/32"}):
+            with self.subTest(values=values), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.platform_allocation(values)
+            self.assertEqual(raised.exception.code, "invalid_platform_network")
+
+    def test_existing_network_with_the_contract_allocation_is_used(self):
+        run = runner_with()
+        bootstrap.ensure_network(run, "platform", *bootstrap.platform_allocation({}))
         self.assertEqual(len(run.calls), 1)
+
+    def test_existing_network_with_another_allocation_is_refused_with_both_values(self):
+        second = '{"Subnet":"10.9.0.0/24"}'
+        for ipam, observed in (('[{"Subnet":"172.18.0.0/16","Gateway":"172.18.0.1"}]', "subnet 172.18.0.0/16 ip-range none"),
+                               ("null", "no IPAM configuration"),
+                               (CONTRACT_IPAM[:-1] + "," + second + "]", "subnet 10.9.0.0/24 ip-range none")):
+            with self.subTest(ipam=ipam), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.ensure_network(runner_with(ipam=ipam), "platform", *bootstrap.platform_allocation({}))
+            self.assertEqual(raised.exception.code, "platform_network_mismatch")
+            self.assertIn(observed, raised.exception.detail)
+            self.assertIn("expected subnet 172.30.0.0/24 ip-range 172.30.0.128/25", raised.exception.detail)
+            self.assertIn("docker network rm platform", raised.exception.detail)
+
+    def test_concurrent_creation_validates_the_winning_network(self):
+        run = runner_with(network_exists=False, create_fails=True)
+        bootstrap.ensure_network(run, "platform", *bootstrap.platform_allocation({}))
+        self.assertEqual([call[:3] for call in run.calls], [["docker", "network", "inspect"],
+                                                          ["docker", "network", "create"],
+                                                          ["docker", "network", "inspect"]])
+        with self.assertRaises(bootstrap.Refused) as raised:
+            bootstrap.ensure_network(runner_with(network_exists=False, create_fails=True, ipam="[]"),
+                                     "platform", *bootstrap.platform_allocation({}))
+        self.assertEqual(raised.exception.code, "platform_network_mismatch")
 
     def test_bootstrap_selects_s3_and_uses_suffix_without_rewriting_operator_lines(self):
         self.render()
@@ -322,9 +361,13 @@ class BootstrapTests(unittest.TestCase):
         settings = {}
         bootstrap.access_config(settings)
         self.assertEqual(settings["OB_ACCESS_MODE"], "local")
+        for proxies in (None, ""):
+            settings = {"OB_ACCESS_MODE": "proxy"} | ({} if proxies is None else {"OB_TRUSTED_PROXIES": proxies})
+            bootstrap.access_config(settings)
+            self.assertEqual(settings["OB_TRUSTED_PROXIES"], "172.30.0.2/32")
         for invalid in ({"OB_ACCESS_MODE": "unknown"}, {"OB_SCHEME": "ftp"},
                         {"OB_ACCESS_MODE": "public", "OB_SCHEME": "http"},
-                        {"OB_ACCESS_MODE": "proxy"}, {"OB_TRUSTED_PROXIES": "172.16.0.0/12"},
+                        {"OB_TRUSTED_PROXIES": "172.16.0.0/12"},
                         {"OB_PUBLIC_DOMAIN": "localhost {"}, {"OB_PUBLIC_PORT_SUFFIX": ":70000"}):
             with self.subTest(invalid=invalid), self.assertRaises(bootstrap.Refused):
                 bootstrap.access_config(invalid.copy())

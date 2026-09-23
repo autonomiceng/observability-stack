@@ -30,7 +30,7 @@ python3 scripts/bootstrap.py
 Use `OB_ALERTS=placeholder` explicitly for an installation without delivery; readiness
 then reports `alert_delivery_placeholder`. See [alert setup](docs/operations/maintenance.md).
 
-Bootstrap writes `.env` with a generated Grafana admin password, creates the shared `platform` network, starts everything and waits for it to be healthy. About a minute.
+Bootstrap writes `.env` with a generated Grafana admin password, creates or validates the shared `platform` network allocation, starts everything and waits for it to be healthy. About a minute.
 
 | URL | What |
 | --- | --- |
@@ -41,7 +41,7 @@ Open Explore, pick Loki, and query `{compose_project="observability-stack"}`. Yo
 
 If the LLM gateway runs on the same host, its logs appear automatically under `compose_project="llm-gateway-stack"`. For metrics, set `OB_SCRAPE_GATEWAY=true` and allow Alloy’s scraper address in the gateway settings. See [logging and collection](docs/operations/logging.md).
 
-Local mode offers HTTP and self-signed HTTPS. It does not force HTTP visitors onto HTTPS. To put it on the internet, set `OB_ACCESS_MODE=public`, a domain and a public bind address in `.env`. When Platform Edge handles HTTPS for this stack, select `proxy`. See [ingress](docs/operations/ingress.md).
+Local mode offers HTTP and self-signed HTTPS. It does not force HTTP visitors onto HTTPS. To put it on the internet, set `OB_ACCESS_MODE=public`, a domain and a public bind address in `.env`. When Platform Edge handles HTTPS for this stack, select `proxy`; behind Edge also set `OB_HTTP_PORT=18180`, and the default `OB_TRUSTED_PROXIES=172.30.0.2/32` already trusts Edge's reserved address. See [ingress](docs/operations/ingress.md).
 
 ## What's inside
 

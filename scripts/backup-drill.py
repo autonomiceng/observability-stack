@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Prove recovery using only a fresh disposable project."""
+import ipaddress
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 from pathlib import Path
 
 import checkpoint
@@ -122,6 +124,8 @@ def main():
     if containers or labelled or any(name.startswith(project + '_') for name in names):
         raise RuntimeError('drill project already exists; refusing to touch it')
     network = project + '-platform'
+    # Disjoint from the installed Platform Network (172.30.0.0/24); Docker refuses overlapping subnets.
+    subnet = os.environ.get('SMOKE_PLATFORM_SUBNET') or f'172.31.{zlib.crc32(project.encode()) % 256}.0/24'
     if checkpoint.bootstrap.run(['docker', 'network', 'inspect', network]).returncode == 0:
         raise RuntimeError('drill network already exists; refusing to touch it')
     image_tag = project + '-loki:drill'
@@ -138,8 +142,10 @@ def main():
         'OB_PLATFORM_NETWORK': network, 'OB_STATE_DIR': str(work / 'data'),
         'OB_BACKUP_DIR': str(work / 'backups'), 'OB_SCRAPE_GATEWAY': 'false',
         'OB_VOLUME_PREFIX': project, 'OB_ALERTS': 'placeholder', 'OB_OPERATOR_ALLOW': 'private_ranges',
-        'OB_LOKI_IMAGE': image_tag,
+        'OB_LOKI_IMAGE': image_tag, 'OB_PLATFORM_SUBNET': subnet, 'OB_PLATFORM_IP_RANGE': subnet,
     }
+    # Restore validates the network from the shell allocation; the env file carries the same values.
+    os.environ.update(OB_PLATFORM_SUBNET=subnet, OB_PLATFORM_IP_RANGE=subnet)
     text = (root / '.env.example').read_text()
     for key, value in settings.items():
         text = re.sub(rf'^{key}=.*$', f'{key}={value}', text, flags=re.M)
@@ -158,7 +164,9 @@ def main():
             run(['docker', 'pull', pinned_loki])
         run(['docker', 'tag', pinned_loki, image_tag])
         image_created = True
-        run(['docker', 'network', 'create', network])
+        gateway = str(next(ipaddress.IPv4Network(subnet).hosts()))
+        run(['docker', 'network', 'create', '--driver', 'bridge', '--subnet', subnet, '--ip-range', subnet,
+             '--gateway', gateway, network])
         network_created = True
         run(['python3', str(root / 'scripts/bootstrap.py'), '--env-file', str(env_file)])
         stack = checkpoint.Stack(env_file)

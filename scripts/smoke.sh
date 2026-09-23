@@ -12,6 +12,9 @@ esac
 http_port=${SMOKE_HTTP_PORT:-18180}
 https_port=${SMOKE_HTTPS_PORT:-18543}
 network="$COMPOSE_PROJECT_NAME-platform"
+# Disjoint from the installed Platform Network (172.30.0.0/24); Docker refuses overlapping subnets.
+subnet=${SMOKE_PLATFORM_SUBNET:-172.31.$(( $(printf %s "$COMPOSE_PROJECT_NAME" | cksum | cut -d' ' -f1) % 256 )).0/24}
+gateway=$(python3 -c 'import ipaddress, sys; print(next(ipaddress.IPv4Network(sys.argv[1]).hosts()))' "$subnet")
 # Fail before installing a cleanup trap if this name is already in use.
 docker info >/dev/null
 [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")" ] || { echo 'smoke project already exists' >&2; exit 2; }
@@ -60,7 +63,6 @@ for key in $(env | sed -n 's/^\(OB_[A-Z0-9_]*\)=.*/\1/p'); do
 done
 # Root runs the proxy variant separately to exercise one hostname on several ports.
 access_mode=${SMOKE_ACCESS_MODE:-local}
-trusted_peers=
 grafana_url=
 rustfs_url=
 gateway_url=
@@ -68,7 +70,6 @@ backplane_url=
 case "$access_mode" in
   local) ;;
   proxy)
-    trusted_peers=192.0.2.2/32
     grafana_url=https://darkforge.tail694fe2.ts.net:8447
     rustfs_url=https://darkforge.tail694fe2.ts.net:8451
     gateway_url=https://darkforge.tail694fe2.ts.net:8443
@@ -77,7 +78,6 @@ case "$access_mode" in
   *) echo 'SMOKE_ACCESS_MODE must be local or proxy' >&2; exit 2 ;;
 esac
 sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
-    -e "s#^OB_TRUSTED_PROXIES=.*#OB_TRUSTED_PROXIES=$trusted_peers#" \
     -e "s#^OB_GRAFANA_URL=.*#OB_GRAFANA_URL=$grafana_url#" \
     -e "s#^OB_RUSTFS_URL=.*#OB_RUSTFS_URL=$rustfs_url#" \
     -e "s#^OB_RUSTFS_CONSOLE=.*#OB_RUSTFS_CONSOLE=$rustfs_console#" \
@@ -87,6 +87,8 @@ sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
     -e "s#^OB_HTTPS_PORT=.*#OB_HTTPS_PORT=$https_port#" \
     -e "s#^OB_PUBLIC_PORT_SUFFIX=.*#OB_PUBLIC_PORT_SUFFIX=:$http_port#" \
     -e "s#^OB_PLATFORM_NETWORK=.*#OB_PLATFORM_NETWORK=$network#" \
+    -e "s#^OB_PLATFORM_SUBNET=.*#OB_PLATFORM_SUBNET=$subnet#" \
+    -e "s#^OB_PLATFORM_IP_RANGE=.*#OB_PLATFORM_IP_RANGE=$subnet#" \
     -e "s#^OB_VOLUME_PREFIX=.*#OB_VOLUME_PREFIX=$COMPOSE_PROJECT_NAME#" \
     -e "s#^OB_ALERTS=.*#OB_ALERTS=placeholder#" \
     -e "s#^OB_RUSTFS_CONSOLE_ALLOW=.*#OB_RUSTFS_CONSOLE_ALLOW=127.0.0.1/8 ::1#" \
@@ -98,11 +100,10 @@ sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
     -e "s#^OB_SCRAPE_BACKPLANE=.*#OB_SCRAPE_BACKPLANE=false#" \
     .env.example > "$env_file"
 chmod 600 "$env_file"
-docker network create "$network" >/dev/null
+docker network create --driver bridge --subnet "$subnet" --ip-range "$subnet" --gateway "$gateway" "$network" >/dev/null
 trap cleanup EXIT HUP INT TERM
-# Permit only this disposable project's host ingress peer, regardless of Docker's address pool.
-console_peer=$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' "$network")
-sed -i "s#^OB_RUSTFS_CONSOLE_ALLOW=.*#OB_RUSTFS_CONSOLE_ALLOW=$console_peer#" "$env_file"
+# Permit only this disposable project's host ingress peer.
+sed -i "s#^OB_RUSTFS_CONSOLE_ALLOW=.*#OB_RUSTFS_CONSOLE_ALLOW=$gateway#" "$env_file"
 image=$(python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "scripts"); import bootstrap; print(bootstrap.images(Path("compose.yaml"))["caddy"])')
 producer=$(docker run -d --network none --log-driver=journald --log-opt cache-disabled=true \
   --entrypoint sh "$image" -c 'echo independent-stdout; echo independent-stderr >&2')

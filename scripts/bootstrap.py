@@ -2,8 +2,8 @@
 """Bring the Observability Stack up from a clean checkout, or refuse with a reason.
 
 Lock the env file, fill in
-missing secrets, refuse to invent secrets over existing data, create the shared platform
-network, start the stack, wait for readiness, print the next step. Exit codes: 0 ready,
+missing secrets, refuse to invent secrets over existing data, create or validate the shared
+platform network allocation, start the stack, wait for readiness, print the next step. Exit codes: 0 ready,
 1 refused (the JSON line on stderr names why), 2 bad usage, 3 the stack did not become
 ready. Python 3.11+ standard library only.
 """
@@ -36,6 +36,11 @@ from status_io import Unavailable, now, task_record
 
 PROJECT = "observability-stack"
 NETWORK = "platform"
+# Platform Network allocation shared by every stack (docs/conventions.md). Edge's reserved
+# address lies outside the dynamic range, so siblings can trust it without discovery.
+PLATFORM_SUBNET = "172.30.0.0/24"
+PLATFORM_IP_RANGE = "172.30.0.128/25"
+EDGE_PROXY = "172.30.0.2/32"
 VOLUMES = ("caddy-data", "caddy-config", "grafana-data", "alloy-data",
            "loki-data", "tempo-data", "mimir-data", "rustfs-data")
 
@@ -189,13 +194,58 @@ def write_versions(root: Path, compose: Path, settings: dict[str, str] | None = 
     (console / "links.json").write_text(json.dumps(links) + "\n", encoding="utf-8")
 
 
-def ensure_network(runner: Runner, name: str = NETWORK) -> None:
-    probe = runner(["docker", "network", "inspect", name])
-    if probe.returncode == 0:
-        return
-    created = runner(["docker", "network", "create", name])
-    if created.returncode != 0:
-        raise Refused("network_create_failed", created.stderr.strip())
+def platform_allocation(settings) -> tuple[str, str]:
+    subnet = settings.get("OB_PLATFORM_SUBNET") or PLATFORM_SUBNET
+    ip_range = settings.get("OB_PLATFORM_IP_RANGE") or PLATFORM_IP_RANGE
+    try:
+        network, dynamic = ipaddress.IPv4Network(subnet), ipaddress.IPv4Network(ip_range)
+    except ValueError as error:
+        raise Refused("invalid_platform_network",
+                      "OB_PLATFORM_SUBNET and OB_PLATFORM_IP_RANGE must be IPv4 networks") from error
+    if not dynamic.subnet_of(network):
+        raise Refused("invalid_platform_network", "OB_PLATFORM_IP_RANGE must lie inside OB_PLATFORM_SUBNET")
+    # Docker could hand a trusted address to any container attached to the network.
+    for proxy in settings.get("OB_TRUSTED_PROXIES", "").split():
+        try:
+            trusted = ipaddress.ip_network(proxy, strict=False)
+        except ValueError:
+            continue
+        if trusted.version == 4 and trusted.overlaps(dynamic):
+            raise Refused("invalid_platform_network",
+                          f"OB_PLATFORM_IP_RANGE {dynamic} must exclude trusted proxy {proxy}")
+    return str(network), str(dynamic)
+
+
+def ensure_network(runner: Runner, name: str = NETWORK, subnet: str | None = None,
+                   ip_range: str | None = None) -> None:
+    if subnet is None or ip_range is None:
+        # Checkpoint restore passes no settings; the shell may carry a disposable allocation.
+        subnet, ip_range = platform_allocation(os.environ)
+    inspect = ["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", name]
+    probe = runner(inspect)
+    if probe.returncode != 0:
+        gateway = str(next(ipaddress.IPv4Network(subnet).hosts()))
+        created = runner(["docker", "network", "create", "--driver", "bridge", "--subnet", subnet,
+                          "--ip-range", ip_range, "--gateway", gateway, name])
+        if created.returncode == 0:
+            return
+        # Another bootstrap may have created it first; validate that network instead.
+        probe = runner(inspect)
+        if probe.returncode != 0:
+            raise Refused("network_create_failed", created.stderr.strip())
+    try:
+        configs = json.loads(probe.stdout) or []
+    except ValueError:
+        configs = []
+    observed = [(config.get("Subnet", ""), config.get("IPRange", "")) for config in configs]
+    # A second IPv4 pool would also hand out addresses; IPv6 pools are left to the operator.
+    ipv4 = [entry for entry in observed if ":" not in entry[0]]
+    if ipv4 != [(subnet, ip_range)]:
+        found = "; ".join(f"subnet {s or 'none'} ip-range {r or 'none'}" for s, r in observed) or "no IPAM configuration"
+        raise Refused("platform_network_mismatch",
+                      f"network {name} has {found}; expected subnet {subnet} ip-range {ip_range}. "
+                      f"One-time fix: stop every stack on {name}, run `docker network rm {name}`, "
+                      "then rerun bootstrap")
 
 
 def ensure_volumes(runner: Runner, prefix: str, project: str, s3: bool = False) -> None:
@@ -406,10 +456,9 @@ def access_config(settings: dict[str, str]) -> None:
                    for url in urls]
     if authorities[0] in authorities[1:]:
         raise Refused("rustfs_origin_conflict", "RustFS requires a separate browser authority")
-    peers = settings.get("OB_TRUSTED_PROXIES", "").split()
-    if mode == "proxy" and not peers:
-        raise Refused("proxy_trust_required", "set OB_TRUSTED_PROXIES to exact Platform Edge peer IPs")
-    for peer in peers:
+    # Compose renders the same default for an empty value.
+    settings["OB_TRUSTED_PROXIES"] = settings.get("OB_TRUSTED_PROXIES") or EDGE_PROXY
+    for peer in settings["OB_TRUSTED_PROXIES"].split():
         try:
             network = ipaddress.ip_network(peer, strict=True)
             if network.num_addresses != 1:
@@ -544,6 +593,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
         settings.update({key: value for key, value in os.environ.items()
                          if key.startswith("OB_") or key in ("COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME")})
         access_config(settings)
+        allocation = platform_allocation(settings)
         s3 = "s3" in settings.get("COMPOSE_PROFILES", "").split(",")
         proxy = settings["OB_ACCESS_MODE"] == "proxy"
         files = compose_selection(root, settings, s3, proxy)
@@ -645,7 +695,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
             write_versions(root, compose, settings, services=json.loads(resolved.stdout)["services"])
             delivery = write_provisioning(root, state_dir, settings)
 
-            ensure_network(runner, settings.get("OB_PLATFORM_NETWORK", NETWORK))
+            ensure_network(runner, settings.get("OB_PLATFORM_NETWORK", NETWORK), *allocation)
             ensure_volumes(runner, prefix, project, s3)
             compose_up(root, env_file, runner, s3, proxy, files)
             scheme = settings.get("OB_SCHEME", "http")

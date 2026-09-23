@@ -78,11 +78,13 @@ OB_ACCESS_MODE=proxy
 OB_PUBLIC_DOMAIN=observe.example.com
 OB_GRAFANA_HOST=grafana.observe.example.com
 OB_SCHEME=https
-OB_HTTP_PORT=8080
-OB_TRUSTED_PROXIES=192.0.2.2/32
+OB_HTTP_PORT=18180
+OB_TRUSTED_PROXIES=172.30.0.2/32
 ```
 
-Replace the example peer with Edge's actual Docker source address. Bootstrap selects
+`172.30.0.2/32` is Edge's reserved Platform Network address and the default; see
+[Shared host](#shared-host). Port 18180 is the contract's loopback HTTP port for this
+stack behind Edge. Bootstrap selects
 `compose.yaml:compose.proxy.yaml` (plus the S3 override when enabled); the override replaces
 the port list, publishing only HTTP. Compose 2.24.4+ supports the required `!override` tag.
 Do not bypass this selection with `-f compose.yaml` when operating a proxy installation.
@@ -105,11 +107,10 @@ OB_SCHEME=https
 OB_PUBLIC_PORT_SUFFIX=:8446
 OB_BIND_HOST=127.0.0.1
 OB_HTTP_PORT=18180
-OB_TRUSTED_PROXIES=192.0.2.2/32
+OB_TRUSTED_PROXIES=172.30.0.2/32
 ```
 
-Replace `192.0.2.2/32` with Edge's exact Docker source IP. Port 18180 is the stack's
-loopback HTTP port; choose a free one. In this example port 8446 serves the Stack
+Port 18180 is the stack's loopback HTTP port behind Edge. In this example port 8446 serves the Stack
 Console and port 8447 serves Grafana. Edge owns the HTTPS listeners and certificates.
 Keep the existing secrets, state directory, volume prefix and storage profile.
 Run bootstrap again after changing the settings. It records `OB_GRAFANA_URL_HOST`
@@ -205,9 +206,19 @@ signed response is 200; the unsigned response is 403 after the operator IP gate.
 
 ## Shared host
 
-Bootstrap creates the external network `platform`. Caddy is `ob-gateway`, Grafana is
-`ob-grafana`; the gateway console can probe `http://ob-grafana:3000/api/health` directly.
-A shared edge can reach `ob-gateway:80` while the stack uses spare loopback ports.
+Caddy joins the external network `platform` as `ob-gateway`, Grafana as `ob-grafana`; the
+gateway console can probe `http://ob-grafana:3000/api/health` directly. A shared edge can
+reach `ob-gateway:80` while the stack uses spare loopback ports.
+
+The Platform Network has one allocation on every host, defined in the shared contract
+([conventions](../conventions.md)): subnet `172.30.0.0/24` (`OB_PLATFORM_SUBNET`), dynamic
+range `172.30.0.128/25` (`OB_PLATFORM_IP_RANGE`) and gateway `172.30.0.1`. Platform Edge
+holds the reserved address `172.30.0.2` outside the dynamic range. Whichever bootstrap runs
+first creates the network with these parameters. Every bootstrap validates an existing
+network and refuses a different subnet or range, or a network with no IPAM configuration,
+with `platform_network_mismatch`. To repair a network created before this contract, stop
+every stack on it, run `docker network rm` on the network the error names (`OB_PLATFORM_NETWORK`,
+default `platform`), then rerun bootstrap. Every stack on the host must use the same values.
 
 Set `OB_GATEWAY_URL` and `OB_BACKPLANE_URL` to the sibling consoles' actual browser URLs.
 The optional cards probe over `platform`; a never-seen missing stack displays "not installed".
@@ -224,10 +235,14 @@ members. Alloy joins as `ob-alloy`. Its OTLP receivers bind only to `ob-alloy-ot
 the project's default network, at ports 4317 (gRPC) and 4318 (HTTP). Opt-in producers must
 join that network to send traces; the Platform Network cannot reach those listeners.
 
-`OB_TRUSTED_PROXIES` is empty for standalone ingress. Behind platform-edge, set it to
-only the edge's exact source IPs (`/32` or `/128` also accepted). Subnets and symbolic ranges
-are refused. Coordinate a stable Edge peer address with its operator and update trust if
-that address changes. Detailed `/versions.json`,
+`OB_TRUSTED_PROXIES` defaults to Edge's reserved address, `172.30.0.2/32`, so no address
+discovery is needed; an empty value uses the same default. Docker never assigns that address
+dynamically, so without Edge the default grants nothing. Change it only for another gateway
+or a different Platform Network subnet, and keep it to exact IPs (`/32` or `/128` also
+accepted). Subnets and symbolic ranges are refused, and bootstrap refuses an
+`OB_PLATFORM_IP_RANGE` that contains a trusted IPv4 proxy address. Bootstrap keeps an existing
+nonempty value; replace an older discovered Edge IP with `172.30.0.2/32` once Edge holds its
+reserved address. Detailed `/versions.json`,
 upstream health bodies and alert-delivery diagnostics require the parsed client IP to match
 `OB_OPERATOR_ALLOW`, which defaults to loopback. Other callers receive status-only responses.
 Caddy accepts forwarded client IPs only from configured trusted proxies and parses the chain
