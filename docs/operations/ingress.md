@@ -68,7 +68,7 @@ OB_BIND_HOST=0.0.0.0
 Run bootstrap. Caddy obtains certificates and redirects HTTP to the configured HTTPS
 origins. Exact root health routes remain available over HTTP without a redirect; backend
 APIs remain private. Exact `/status.json` is also served over HTTP without a redirect and
-exposes the public allowlist described in the [status runbook](status.md). Public readiness verifies the certificate with system trust and sends
+exposes the [status document](maintenance.md#status-document). Public readiness verifies the certificate with system trust and sends
 the configured hostname as TLS SNI while dialing the loopback published port.
 
 ## Behind another gateway
@@ -137,8 +137,8 @@ OB_BACKPLANE_URL=https://darkforge.tail694fe2.ts.net:8445
 ```
 
 Use the ports actually configured at Edge. Leave these values empty for a standalone
-installation. The Stack Console reads configured application links from `/links.json`,
-including for callers who receive status-only `/versions.json` responses.
+installation. The Stack Console reads configured application links from `/links.json`
+and configured versions from `/status.json`.
 
 ## Optional RustFS human console
 
@@ -242,7 +242,7 @@ or a different Platform Network subnet, and keep it to exact IPs (`/32` or `/128
 accepted). Subnets and symbolic ranges are refused, and bootstrap refuses an
 `OB_PLATFORM_IP_RANGE` that contains a trusted IPv4 proxy address. Bootstrap keeps an existing
 nonempty value; replace an older discovered Edge IP with `172.30.0.2/32` once Edge holds its
-reserved address. Detailed `/versions.json`,
+reserved address. Detailed
 upstream health bodies and alert-delivery diagnostics require the parsed client IP to match
 `OB_OPERATOR_ALLOW`, which defaults to loopback. Other callers receive status-only responses.
 Caddy accepts forwarded client IPs only from configured trusted proxies and parses the chain

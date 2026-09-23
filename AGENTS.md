@@ -38,7 +38,9 @@ For delegated work, use the model choices, risk paths and brief templates in
 ## Where things live
 
 - `compose.yaml`: services, image versions and volumes. `compose.s3.yaml`: storage mount override.
-- `.env.example`: operator settings. `scripts/bootstrap.py`: secrets, network and readiness.
+- `.env.example`: operator settings. `scripts/bootstrap.py`: secrets, network, readiness and
+  the Status Document (`OB_STATE_DIR/console/status.json`). `scripts/retire-status-timer.sh`:
+  one-time removal of the version 1 status timer.
 - `config.alloy`: collection pipelines. `docker/{loki,mimir,tempo}/`: backend configuration.
 - `docker/grafana/`: provisioned datasources, dashboard and alerts.
 - `docker/caddy/`: one Caddyfile for both access modes and the static Stack Console.

@@ -113,6 +113,40 @@ See [capacity and OOM recovery](capacity.md), [disk-full recovery](disk-full.md)
 [Checkpoint recovery](backup.md). `docker compose down -v` preserves external volumes.
 `scripts/destroy.sh` deletes them only after the operator types the project name.
 
+## Status document
+
+Bootstrap writes `OB_STATE_DIR/console/status.json` after every readiness probe passes,
+replacing the whole file at once. Caddy serves it as `GET /status.json` to any client, in
+every access mode, with `Cache-Control: no-store`; other methods receive an empty 405. It
+follows Status v2 in [conventions](../conventions.md): the configured image of each
+component without its digest, the tag as `version` (null for a tag that is not a release),
+whether the selected Compose profiles enable the service, the Grafana origin and the RustFS
+console origin when enabled, `features.backups` (the time of the newest Checkpoint in
+`OB_BACKUP_DIR` when bootstrap ran; later Checkpoints do not update it) and
+`features.alerts` (true for webhook or email with SMTP, false for the placeholder). It is
+configuration, not observation: a version is what bootstrap configured, not what runs.
+Rerun bootstrap after changing images, origins, profiles or alert delivery. The document
+never contains secrets, digests, container names or host paths. A Checkpoint restore does
+not rewrite it.
+
+Liveness comes from `/health/<component>`, status only for clients outside `OB_OPERATOR_ALLOW`:
+
+| Component | Probe |
+| --- | --- |
+| `caddy` | Caddy answers |
+| `grafana`, `alloy` | `/api/health`, `/-/ready` |
+| `loki`, `mimir`, `tempo` | `/ready` |
+| `rustfs` | `/health/ready` with the `s3` profile; otherwise 404 |
+
+Upgrading from the version 1 status timer: run `scripts/retire-status-timer.sh` as the
+installation user, then `python3 scripts/bootstrap.py`. The script disables and removes
+`observability-status.timer` and `.service` from the user's systemd directory, reloads the
+user manager, and deletes `bootstrap.json`, `observer.lock` and the `status` directory under
+the `OB_STATE_DIR` saved in `.env`; pass another env file as its argument if bootstrap used
+one. It prints each removal and is safe to rerun. Bootstrap
+then replaces the version 1 `status.json`. `/versions.json` is gone; the Stack Console reads
+`/status.json`.
+
 ## Image experiments
 
 Every service accepts a complete `OB_*_IMAGE` reference from `.env` or the shell;

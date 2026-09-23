@@ -212,8 +212,9 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
                            for earlier in routes[:index]), f'{path}: RustFS proxy lacks a preceding operator denial'
                 protected += 1
     assert protected == len(rustfs_proxies), f'{path}: RustFS proxy outside the gated route'
-    operator_paths = ('/versions.json', '/health/grafana', '/health/loki', '/health/tempo',
-                      '/health/mimir', '/health/alloy', '/health/gateway', '/health/backplane',
+    assert '/versions.json' not in encoded, f'{path}: Status v2 replaced /versions.json'
+    operator_paths = ('/health/grafana', '/health/loki', '/health/tempo', '/health/mimir',
+                      '/health/alloy', '/health/rustfs', '/health/gateway', '/health/backplane',
                       '/health/alerts')
     for operator_path in operator_paths:
         matched_routes = [item for item in objects(config) if any(

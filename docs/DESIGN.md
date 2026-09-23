@@ -104,20 +104,17 @@ the root console is opened through an IP or an arbitrary local HTTP hostname.
 Local readiness verifies both protocols using the installation's public CA certificate in
 memory. Private keys remain in the existing Caddy data volume; no host trust is installed.
 
-Caddy serves exact `/health/{grafana,loki,tempo,mimir,alloy}` routes. Optional sibling probes
+Caddy serves exact `/health/{caddy,grafana,loki,tempo,mimir,alloy,rustfs}` routes. Optional sibling probes
 are `/health/gateway` and `/health/backplane`. Caddy's aggregate Docker healthcheck probes
 all five own upstreams. Mimir and Tempo are distroless, so backend readiness is checked over
 HTTP from Caddy rather than by installing another executable in their containers. The smoke
 contract checks each endpoint as well as container state.
 
-An optional host Python observer publishes `/status.json` through the existing console
-state mount, unauthenticated in every access mode, including public internet access.
-It includes allowlisted version and image digest metadata. Configuration observations, bounded component probes,
-runtime image identity and installation task execution times have independent evidence;
-120-second validity prevents a stopped observer from reporting current success. The host
-user owns Docker access; Caddy only reads the public JSON. Bootstrap attempts an initial
-observation after readiness, and a separate opt-in user timer refreshes it every 30 seconds.
-See `operations/status.md` for the exact probe claims, limits and operator steps.
+Bootstrap writes the Status v2 document to `OB_STATE_DIR/console/status.json` after
+readiness, from `docker compose config` with and without every profile. Caddy serves it at
+`/status.json`, unauthenticated in every access mode, and each component's liveness at
+`/health/<component>`. No host observer or timer. See
+[maintenance](operations/maintenance.md#status-document).
 
 Compose retains tested digest defaults and accepts complete `OB_*_IMAGE` references from `.env`.
 Checkpoint tools verify effective content identity before capturing or restoring experiments.
