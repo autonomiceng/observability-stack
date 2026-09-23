@@ -147,10 +147,11 @@ discovery.relabel "backplane" {
     "__address__" = "bp-server:3000",
     "__enabled" = sys.env("OB_SCRAPE_BACKPLANE"),
   }]
+  // Fail closed: only an exact "true" sends the bearer token.
   rule {
     source_labels = ["__enabled"]
-    regex = "false"
-    action = "drop"
+    regex = "true"
+    action = "keep"
   }
 }
 
