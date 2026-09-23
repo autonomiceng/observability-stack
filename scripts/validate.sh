@@ -63,6 +63,7 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
         'darkforge.tail694fe2.ts.net:8447' if explicit_url else '')
     assert services['alloy']['environment']['OB_SCRAPE_EDGE'] == 'false'
     assert services['alloy']['environment']['OB_SCRAPE_GATEWAY'] == 'false'
+    assert services['alloy']['environment']['OB_SCRAPE_BACKPLANE'] == 'false'
     unpinned = []
     for name, svc in services.items():
         ref = svc.get('image', '')
@@ -95,6 +96,22 @@ assert len(lines) == 8
 assert all(re.fullmatch(r'image: \$\{OB_[A-Z0-9_]+_IMAGE:-[^\s{}]+:[^\s:@]+@sha256:[0-9a-f]{64}\}', line) for line in lines), 'Renovate-readable image defaults'
 PY_IMAGES
 echo 'compose config and pins: PASS'
+# Alloy's unauthenticated UI and API show target labels; only bearer_token is redacted.
+OB_SCRAPE_BACKPLANE=true OB_BACKPLANE_OPERATIONS_TOKEN=validation-only-backplane-token \
+  docker compose --env-file "$work/.env" -f compose.yaml config --format json > "$work/token.out"
+python3 - "$work/token.out" <<'PY'
+import json, sys
+from pathlib import Path
+token = 'validation-only-backplane-token'
+config = json.loads(Path(sys.argv[1]).read_text())
+alloy = config['services']['alloy']
+assert alloy['environment']['OB_SCRAPE_BACKPLANE'] == 'true'
+assert alloy['environment']['OB_BACKPLANE_OPERATIONS_TOKEN'] == token
+assert json.dumps(config).count(token) == 1, 'backplane token outside Alloy environment'
+uses = [line.strip() for line in Path('config.alloy').read_text().splitlines() if 'OB_BACKPLANE_OPERATIONS_TOKEN' in line]
+assert uses == ['bearer_token = sys.env("OB_BACKPLANE_OPERATIONS_TOKEN")'], uses
+PY
+echo 'backplane token confined to Alloy environment and bearer_token: PASS'
 python3 - "$work" <<'PY'
 import json, subprocess, sys
 from pathlib import Path
@@ -233,10 +250,11 @@ echo 'Caddyfile (3 access modes, trusted proxy, RustFS off/on): PASS'
 for enabled in true false; do
 for token in '' validation-only; do
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \
-    -e "OB_SCRAPE_EDGE=$enabled" -e "OB_SCRAPE_GATEWAY=$enabled" -e "OB_BACKPLANE_OPERATIONS_TOKEN=$token" \
+    -e "OB_SCRAPE_EDGE=$enabled" -e "OB_SCRAPE_GATEWAY=$enabled" -e "OB_SCRAPE_BACKPLANE=$enabled" \
+    -e "OB_BACKPLANE_OPERATIONS_TOKEN=$token" \
     -v "$root/config.alloy:/etc/alloy/config.alloy:ro" "$alloy_image" \
     validate /etc/alloy/config.alloy
 done
 done
-echo 'Alloy config (Edge/gateway enabled/disabled, token absent/present): PASS'
+echo 'Alloy config (Edge/gateway/backplane enabled/disabled, token absent/present): PASS'
 echo 'Grafana provisioning: checked by smoke.sh against the running Grafana APIs'

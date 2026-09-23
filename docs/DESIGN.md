@@ -38,8 +38,8 @@ logging audit, host prerequisites and evidence checks.
 Alloy scrapes LiteLLM, gateway Valkey/Postgres exporters and gateway Checkpoint metrics
 when enabled (`OB_SCRAPE_GATEWAY=true`, default false). A hidden-label relabel rule removes
 disabled targets. Another
-relabel rule removes the backplane target while `OB_BACKPLANE_OPERATIONS_TOKEN` is empty; a nonempty
-token enables the authenticated scrape. Enabled but missing stacks produce failed scrapes; disabled targets are absent, while Collector readiness stays independent of scrape success. Mimir receives
+relabel rule removes the backplane target unless `OB_SCRAPE_BACKPLANE=true`; the scrape
+authenticates with `OB_BACKPLANE_OPERATIONS_TOKEN`, which never becomes a target label. Enabled but missing stacks produce failed scrapes; disabled targets are absent, while Collector readiness stays independent of scrape success. Mimir receives
 remote-write at `/api/v1/push`; Grafana queries its `/prometheus` API. Embedded cAdvisor
 supplies container resource metrics. Embedded textfile
 collection reads `OB_STATE_DIR/textfile/*.prom`. The same unix exporter collects host
@@ -129,7 +129,7 @@ refuses an existing disposable project name before installing its cleanup trap.
 
 Grafana does not offer a general offline provisioning validator used here. The smoke contract
 checks its authenticated datasource, dashboard and alert APIs after loading the YAML. Alloy's
-image validates its config with both gateway toggle values and empty/nonempty backplane token settings. Pull request, weekly and manually dispatched CI
+image validates its config with both scrape toggle values and empty/nonempty backplane token settings. Pull request, weekly and manually dispatched CI
 runs both filesystem and S3 smoke; S3 verifies log/metric/trace continuity and object bodies over RustFS restart.
 Separate filesystem and S3 recovery jobs restore Checkpoints into empty disposable volumes.
 The recovery drill disables host discovery only in its temporary checkout; production smoke

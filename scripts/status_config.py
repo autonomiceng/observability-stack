@@ -9,7 +9,7 @@ from status_io import Unavailable, read_file, read_json
 
 LIMIT = 1024 * 1024
 # Reviewed configuration content, not a search for words that could occur in comments.
-ALLOY_SHA256 = '4cc892a74c03a33ca988391b0ec343fc52b452a0800cd2356fdbb674528aac4c'
+ALLOY_SHA256 = 'e16e85d7db86833dad8aa4e4088122760e3c389dd3923ef87199c2918d176dc9'
 FILESYSTEM_SHA256 = {
     'loki': '0aea8d06f5db820a085094aa128ad19e79a8bb689a93a8f0ce7b4efd1ab7e2c4',
     'mimir': '4eecf3023b461037265cc3f7e14426ead297bddc00c2a7c93ff814a49b641237',

@@ -145,11 +145,11 @@ prometheus.scrape "gateway_checkpoints" {
 discovery.relabel "backplane" {
   targets = [{
     "__address__" = "bp-server:3000",
-    "__token_set" = sys.env("OB_BACKPLANE_OPERATIONS_TOKEN"),
+    "__enabled" = sys.env("OB_SCRAPE_BACKPLANE"),
   }]
   rule {
-    source_labels = ["__token_set"]
-    regex = "^$"
+    source_labels = ["__enabled"]
+    regex = "false"
     action = "drop"
   }
 }

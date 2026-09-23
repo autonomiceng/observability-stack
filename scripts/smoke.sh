@@ -95,6 +95,7 @@ sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
     -e "s#^OB_BACKUP_DIR=.*#OB_BACKUP_DIR=$work/backups#" \
     -e "s#^COMPOSE_PROFILES=.*#COMPOSE_PROFILES=$profiles#" \
     -e "s#^OB_SCRAPE_GATEWAY=.*#OB_SCRAPE_GATEWAY=false#" \
+    -e "s#^OB_SCRAPE_BACKPLANE=.*#OB_SCRAPE_BACKPLANE=false#" \
     .env.example > "$env_file"
 chmod 600 "$env_file"
 docker network create "$network" >/dev/null
