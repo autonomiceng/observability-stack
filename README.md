@@ -20,17 +20,13 @@ Everything stores to local volumes by default. An optional profile moves the bac
 You need a Linux Docker host with journald, Docker Compose 2.24.4 or newer, and Python 3.11 or newer. [mise](https://mise.jdx.dev) installs the pinned tools if you use it. See [logging](docs/operations/logging.md) for host prerequisites and portability.
 
 ```sh
-git clone https://github.com/autonomiceng/observability-stack.git
-cd observability-stack
-cp .env.example .env
-# Set OB_ALERT_WEBHOOK_URL or OB_ALERT_EMAIL plus OB_SMTP_URL in .env.
+git clone https://github.com/autonomiceng/observability-stack.git && cd observability-stack
 python3 scripts/bootstrap.py
 ```
 
-Use `OB_ALERTS=placeholder` explicitly for an installation without delivery; readiness
-then reports `alert_delivery_placeholder`. See [alert setup](docs/operations/maintenance.md).
+Bootstrap writes `.env` from `.env.example` with a generated Grafana admin password, creates or validates the shared `platform` network allocation, starts everything and waits for it to be healthy. About a minute.
 
-Bootstrap writes `.env` with a generated Grafana admin password, creates or validates the shared `platform` network allocation, starts everything and waits for it to be healthy. About a minute.
+Alerts evaluate from the start but go nowhere until you configure delivery. Until then bootstrap reports `degraded` with `alert_delivery_placeholder` and the console shows it. Set `OB_ALERT_WEBHOOK_URL`, or `OB_ALERT_EMAIL` plus `OB_SMTP_URL`, in `.env` and run bootstrap again; see [alert setup](docs/operations/maintenance.md#alerts-and-metric-contracts).
 
 | URL | What |
 | --- | --- |

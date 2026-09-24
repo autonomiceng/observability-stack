@@ -119,9 +119,7 @@ and `OB_GRAFANA_AUTHORITY` for Compose; these are derived values, not operator s
 Configure Edge's Grafana listener to forward to `ob-gateway:80`, preserve
 `Host: darkforge.tail694fe2.ts.net:8447`, and overwrite `X-Forwarded-Proto` with
 `https`. Edge must also supply the connecting client's address correctly. The stack
-accepts forwarded information only from its configured exact peers. Give operators'
-actual client addresses access through `OB_OPERATOR_ALLOW`; keep that list separate
-from the Edge peer list.
+accepts forwarded information only from its configured exact peers.
 
 Caddy matches the full external authority, including `:8447`. Requests for the same
 hostname on other ports stay on console routes. The internal `grafana.localhost`
@@ -129,16 +127,8 @@ route and root health routes continue to work. Keep the internal Grafana hostnam
 separate from the external machine hostname so internal routing has its own name.
 Grafana login remains required, and `/metrics` remains blocked at the Stack Gateway.
 
-Optional siblings can use their own ports on the same hostname:
-
-```sh
-OB_GATEWAY_URL=https://darkforge.tail694fe2.ts.net:8443
-OB_BACKPLANE_URL=https://darkforge.tail694fe2.ts.net:8445
-```
-
-Use the ports actually configured at Edge. Leave these values empty for a standalone
-installation. The Stack Console reads configured application links from `/links.json`
-and configured versions from `/status.json`.
+The Stack Console reads this stack's application links from `/links.json` and configured
+versions from `/status.json`. It links no sibling stacks; Platform Edge's console does.
 
 ## Optional RustFS human console
 
@@ -220,13 +210,6 @@ with `platform_network_mismatch`. To repair a network created before this contra
 every stack on it, run `docker network rm` on the network the error names (`OB_PLATFORM_NETWORK`,
 default `platform`), then rerun bootstrap. Every stack on the host must use the same values.
 
-Set `OB_GATEWAY_URL` and `OB_BACKPLANE_URL` to the sibling consoles' actual browser URLs.
-The optional cards probe over `platform`; a never-seen missing stack displays "not installed".
-Set `OB_GATEWAY_HEALTH_HOST` to the root hostname configured on the sibling gateway's Caddy;
-it defaults to `localhost`. Its internal HTTP health endpoint must be reachable at
-`lg-gateway:80/health/litellm`. An HTTPS-only sibling ingress requires matching internal
-routing at the shared edge; this probe does not bypass TLS or guess its configuration.
-
 Loki, Mimir, Tempo, RustFS and Alloy have no published ports. Loki, Mimir, Tempo and Alloy
 have no public Caddy API routes; RustFS has only the opt-in operator console origin above.
 Grafana authenticates its datasource proxy. Caddy blocks Grafana's `/metrics` path. The
@@ -242,18 +225,14 @@ or a different Platform Network subnet, and keep it to exact IPs (`/32` or `/128
 accepted). Subnets and symbolic ranges are refused, and bootstrap refuses an
 `OB_PLATFORM_IP_RANGE` that contains a trusted IPv4 proxy address. Bootstrap keeps an existing
 nonempty value; replace an older discovered Edge IP with `172.30.0.2/32` once Edge holds its
-reserved address. Detailed
-upstream health bodies and alert-delivery diagnostics require the parsed client IP to match
-`OB_OPERATOR_ALLOW`, which defaults to loopback. Other callers receive status-only responses.
+reserved address.
 Caddy accepts forwarded client IPs only from configured trusted proxies and parses the chain
 from right to left. The edge must correctly overwrite or append the connecting client's IP.
-Untrusted peers cannot gain access by supplying an `X-Forwarded-For` header.
+Untrusted peers cannot gain access by supplying an `X-Forwarded-For` header. With no trusted
+proxy, the client address remains the connection's direct peer.
 
-List the actual operator client
-addresses in `OB_OPERATOR_ALLOW`, separately from proxy trust in `OB_TRUSTED_PROXIES`.
-With no trusted proxy, the client address remains the connection's direct peer. Docker port
-forwarding may present the bridge address even for host loopback requests; add only a verified
-operator source if detailed local responses are needed.
-
-The native console has its own `OB_RUSTFS_CONSOLE_ALLOW` client list. Changing it
-does not grant access to monitoring operator endpoints controlled by `OB_OPERATOR_ALLOW`.
+Health routes have no client-address tier: `/health/<component>` returns the upstream status
+code with an empty body to every caller, and `/health/alerts` returns `{"status":"degraded"}`
+with 503 while alert delivery is unconfigured. Read details inside the stack, for example
+`docker compose logs grafana` or `docker compose exec caddy wget -qO- http://grafana:3000/api/health`.
+The only client-address gate is the native RustFS console's `OB_RUSTFS_CONSOLE_ALLOW`.

@@ -26,7 +26,6 @@ class ReviewFixTests(unittest.TestCase):
             with patch.object(bootstrap, '__file__', str(root / 'scripts/bootstrap.py')), \
                  patch.object(bootstrap.shutil, 'which', return_value=None), \
                  patch.object(bootstrap.subprocess, 'run', side_effect=FileNotFoundError('docker')) as run, \
-                 patch.dict(os.environ, {'OB_ALERTS': 'placeholder'}), \
                  patch.object(sys, 'argv', ['bootstrap.py', '--render-only', '--template', str(template)]), \
                  contextlib.redirect_stderr(io.StringIO()) as errors:
                 self.assertEqual(bootstrap.main(), 1)

@@ -141,7 +141,7 @@ def main():
         'OB_HTTP_PORT': port, 'OB_HTTPS_PORT': https_port, 'OB_PUBLIC_PORT_SUFFIX': ':' + port,
         'OB_PLATFORM_NETWORK': network, 'OB_STATE_DIR': str(work / 'data'),
         'OB_BACKUP_DIR': str(work / 'backups'), 'OB_SCRAPE_GATEWAY': 'false',
-        'OB_VOLUME_PREFIX': project, 'OB_ALERTS': 'placeholder', 'OB_OPERATOR_ALLOW': 'private_ranges',
+        'OB_VOLUME_PREFIX': project,
         'OB_LOKI_IMAGE': image_tag, 'OB_PLATFORM_SUBNET': subnet, 'OB_PLATFORM_IP_RANGE': subnet,
     }
     # Restore validates the network from the shell allocation; the env file carries the same values.

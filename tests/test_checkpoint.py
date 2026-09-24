@@ -812,7 +812,7 @@ class CheckpointVerificationTests(unittest.TestCase):
             archive.addfile(tarfile.TarInfo('empty-file'))
         self.stack = object.__new__(checkpoint.Stack)
         self.stack.env_file, self.stack.mode = self.env, 'filesystem'
-        self.stack.volumes, self.stack.settings = ('loki-data',), {'OB_ALERTS': 'placeholder'}
+        self.stack.volumes, self.stack.settings = ('loki-data',), {}
         self.stack.project, self.stack.state = 'recovery-test', self.root / 'state'
         self.stack.image = 'helper'
         self.stack.config = {'services': {'loki': {'image': PIN}},
@@ -908,9 +908,9 @@ class CheckpointVerificationTests(unittest.TestCase):
             if 'tar -xpf' in script:
                 (volume / 'unexpected-extraction').touch()
         self.stack.runner, self.stack.helper = runner, helper
-        for scenario in ('consumer', 'alert', 'smtp', 'network'):
+        for scenario in ('consumer', 'smtp', 'network'):
             with self.subTest(scenario=scenario):
-                self.stack.settings = {} if scenario == 'alert' else {'OB_ALERTS': 'placeholder'}
+                self.stack.settings = {}
                 if scenario == 'smtp':
                     self.stack.settings = {'OB_ALERT_EMAIL': 'ops@example.com',
                                            'OB_SMTP_URL': 'smtp://user:bad%0Apassword@example.com'}

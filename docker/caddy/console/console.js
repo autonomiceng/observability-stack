@@ -16,10 +16,6 @@
       for (const card of document.querySelectorAll("[data-optional-link]")) {
         card.hidden = !/^https?:\/\//.test(configured[card.dataset.optionalLink]);
       }
-      for (const link of document.querySelectorAll("[data-external]")) {
-        const url = configured[link.dataset.external];
-        if (url && /^https?:\/\//.test(url)) link.href = url;
-      }
       for (const label of document.querySelectorAll("[data-url]")) {
         const origin = configured[label.dataset.url];
         if (/^https?:\/\//.test(origin)) label.textContent = origin + (label.dataset.path || "");
@@ -32,12 +28,6 @@
     b.dataset.state = state;
     b.textContent = label;
   };
-  // A service this browser has seen healthy is "down" when it stops answering;
-  // one it has never seen is "not installed". Optional cards only.
-  const seenKey = (s) => `console.seen.${s}`;
-  const seen = (s) => localStorage.getItem(seenKey(s)) !== null;
-  const remember = (s) => localStorage.setItem(seenKey(s), new Date().toISOString());
-
   const check = async (li) => {
     const service = li.dataset.service;
     const ctl = new AbortController();
@@ -47,11 +37,8 @@
       if (service === "alerts" && res.status === 503) {
         return badge(li, "degraded", "alert_delivery_placeholder");
       }
-      if (res.ok) { remember(service); return badge(li, "ok", "healthy"); }
-      if (res.status === 502 || res.status === 503) {
-        const absent = li.hasAttribute("data-optional") && !seen(service);
-        return badge(li, absent ? "absent" : "down", absent ? "not installed" : "unreachable");
-      }
+      if (res.ok) return badge(li, "ok", "healthy");
+      if (res.status === 502 || res.status === 503) return badge(li, "down", "unreachable");
       badge(li, "degraded", `http ${res.status}`);
     } catch (err) {
       badge(li, err.name === "AbortError" ? "stale" : "down",

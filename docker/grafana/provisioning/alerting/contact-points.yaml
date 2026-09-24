@@ -13,4 +13,4 @@ policies:
     receiver: configure-delivery
     group_by: [grafana_folder, alertname]
 # Bootstrap replaces this template in OB_STATE_DIR/grafana-provisioning.
-# Keeping this placeholder requires explicit OB_ALERTS=placeholder and reports degraded readiness.
+# Without webhook or email delivery settings this placeholder stays and readiness reports degraded.

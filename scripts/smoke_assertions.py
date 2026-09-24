@@ -62,7 +62,7 @@ def check(env_file: Path, origin: str, project: str) -> None:
     settings = {match['key']: bootstrap.unquote(match['value']) for match in map(bootstrap.ENV_LINE.match, lines) if match}
     check_access(env_file, settings)
     check_rustfs_console(settings, env_file)
-    check_status(settings)
+    check_status(settings, env_file)
 
     for service in ('grafana', 'loki', 'tempo', 'mimir', 'alloy'):
         get(base + '/health/' + service)
@@ -145,15 +145,14 @@ def check_proxy_access(env_file, settings):
         assert request(other, '/health/grafana')[0] == 200, other
         status, body = request(other, '/links.json')
         assert status == 200
-        expected_links = {'grafana': settings['OB_GRAFANA_URL'],
-                          'gateway': settings['OB_GATEWAY_URL'], 'backplane': settings['OB_BACKPLANE_URL']}
+        expected_links = {'grafana': settings['OB_GRAFANA_URL']}
         if settings['OB_RUSTFS_CONSOLE'] == 'true':
             expected_links['rustfs'] = bootstrap.rustfs_origin(settings)
         assert json.loads(body) == expected_links
     print('ok: exact external authority, internal Grafana, same-host sibling ports, root health, links, auth and metrics denial', flush=True)
 
 
-def check_status(settings):
+def check_status(settings, env_file):
     """Status v2 written by bootstrap and served publicly; the version 1 route is gone."""
     def request(path, method='GET'):
         connection = http.client.HTTPConnection('127.0.0.1', int(settings['OB_HTTP_PORT']), timeout=10)
@@ -185,6 +184,18 @@ def check_status(settings):
     assert (status, headers['Allow'], body) == (405, 'GET, HEAD', b''), status
     assert request('/versions.json')[0] == 404
     print('ok: status.json is Status v2, its health paths answer, /versions.json is gone', flush=True)
+    # No client address unlocks upstream health bodies: check the host peer and Caddy's own loopback.
+    for service in ('grafana', 'loki', 'tempo', 'mimir', 'alloy'):
+        status, _, body = request('/health/' + service)
+        assert (status, body) == (200, b''), (service, status, body[:80])
+    inside = subprocess.run(['docker', 'compose', '--env-file', str(env_file), 'exec', '-T', 'caddy',
+                             'wget', '-q', '-O', '-', '--header=Host: ' + settings['OB_PUBLIC_DOMAIN'],
+                             'http://127.0.0.1/health/grafana'], capture_output=True, text=True, timeout=15)
+    assert (inside.returncode, inside.stdout) == (0, ''), 'loopback peer must receive an empty health body'
+    assert request('/health/alerts')[::2] == (503, b'{"status":"degraded"}')
+    for sibling in ('/health/gateway', '/health/backplane'):
+        assert request(sibling)[0] == 404, sibling
+    print('ok: empty health bodies for every peer, alert placeholder degraded, no sibling health routes', flush=True)
 
 
 def check_rustfs_console(settings, env_file):

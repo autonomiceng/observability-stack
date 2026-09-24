@@ -41,20 +41,6 @@
         <li data-service="alerts"><div class="row"><h2>Alert delivery</h2><span class="badge" data-badge>checking</span></div></li>
       </ol>
     </section>
-    <section aria-labelledby="platform">
-      <h1 id="platform">On this host</h1>
-      <p class="muted">Optional stacks. Configure their console URLs in .env to enable links.</p>
-      <ol class="cards">
-        <li data-service="gateway" data-optional>
-          <div class="row"><h2><a data-external="gateway">LLM Gateway</a></h2><span class="badge" data-badge>checking</span></div>
-          <p>Routing, budgets and LLM traces.</p>
-        </li>
-        <li data-service="backplane" data-optional>
-          <div class="row"><h2><a data-external="backplane">Agent Backplane</a></h2><span class="badge" data-badge>checking</span></div>
-          <p>Shared state, queues and approvals for agents.</p>
-        </li>
-      </ol>
-    </section>
     <section aria-labelledby="datastores">
       <h1 id="datastores">Collector and backends</h1>
       <p class="muted">Private to Docker networks. Versions show image tags configured at bootstrap; running content may differ.</p>

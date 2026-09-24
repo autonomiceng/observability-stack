@@ -696,7 +696,6 @@ def cli():
             'image_default_unrecognized': 'compose.yaml has an image default this tooling cannot parse',
             'env_repair_required': 'repair managed keys in the original .env',
             'alert_delivery_invalid': 'check alert delivery settings in the original .env',
-            'alert_delivery_required': 'configure alert delivery or explicitly select OB_ALERTS=placeholder',
             'network_create_failed': 'shared network unavailable; inspect Docker diagnostics privately',
             'volume_create_failed': 'volume creation failed; inspect Docker diagnostics privately',
             'not_ready': 'readiness probes failed; inspect service logs privately',

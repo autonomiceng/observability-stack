@@ -193,10 +193,6 @@ def write_versions(root: Path, compose: Path, settings: dict[str, str] | None = 
         "pinnedAt": datetime.fromtimestamp(compose.stat().st_mtime, timezone.utc).isoformat(),
         "configuredAt": datetime.now(timezone.utc).isoformat(),
         "images": tags,
-        "links": {
-            "gateway": (settings or {}).get("OB_GATEWAY_URL", ""),
-            "backplane": (settings or {}).get("OB_BACKPLANE_URL", ""),
-        },
     }
     (console / "versions.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     write_links(state, settings or {})
@@ -211,8 +207,6 @@ def console_dir(state: Path) -> Path:
 
 def console_links(settings: dict[str, str]) -> dict[str, str]:
     links = {"grafana": grafana_origin(settings)}
-    links.update({key: settings[name] for key, name in (("gateway", "OB_GATEWAY_URL"), ("backplane", "OB_BACKPLANE_URL"))
-                  if settings.get(name)})
     if settings.get("OB_RUSTFS_CONSOLE") == "true":
         links["rustfs"] = rustfs_origin(settings)
     return links
@@ -372,10 +366,8 @@ def alert_config(settings: dict[str, str]) -> tuple[str, dict[str, str]]:
             if any(c in value for c in ('\n', '\r', '"""')):
                 raise Refused("alert_delivery_invalid", "SMTP values must be single-line without triple quotes")
         return "email", smtp
-    if settings.get("OB_ALERTS") == "placeholder":
-        return "placeholder", {}
-    raise Refused("alert_delivery_required", "set OB_ALERT_WEBHOOK_URL or OB_ALERT_EMAIL and OB_SMTP_URL; "
-                  "OB_ALERTS=placeholder explicitly permits degraded delivery")
+    # No delivery configured: start anyway and report degraded until an operator adds one.
+    return "placeholder", {}
 
 
 def write_provisioning(root: Path, state: Path, settings: dict[str, str]) -> str:
@@ -721,7 +713,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
             "COMPOSE_PROJECT_NAME", "OB_STATE_DIR", "OB_VOLUME_PREFIX",
             "OB_ACCESS_MODE", "OB_PUBLIC_DOMAIN", "OB_GRAFANA_HOST", "OB_SCHEME",
             "OB_BIND_HOST", "OB_HTTP_PORT", "OB_HTTPS_PORT", "OB_PUBLIC_PORT_SUFFIX",
-            "OB_TRUSTED_PROXIES", "OB_OPERATOR_ALLOW", "OB_GRAFANA_URL",
+            "OB_TRUSTED_PROXIES", "OB_GRAFANA_URL",
             "OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY", "COMPOSE_FILE", "COMPOSE_PROFILES",
             "OB_RUSTFS_CONSOLE", "OB_RUSTFS_CONSOLE_ALLOW", "OB_RUSTFS_HOST", "OB_RUSTFS_URL",
             "OB_RUSTFS_URL_HOST", "OB_RUSTFS_AUTHORITY", "OB_PLATFORM_SUBNET", "OB_PLATFORM_IP_RANGE",

@@ -45,7 +45,7 @@ Tempo also includes Alloy's documented `exporter_send_failed_spans_ratio_total`
 The ingestion rules return no data when the corresponding Backend scrape is unavailable.
 Inspect the affected Backend logs and limits; rejections also occur without disk failure.
 If Mimir or Grafana stops, these alerts cannot reliably evaluate. Use independent host
-monitoring and configure real alert delivery; `OB_ALERTS=placeholder` provides no delivery.
+monitoring and configure real alert delivery; the default placeholder delivers nothing.
 
 ## Safe cleanup and recovery
 

@@ -65,15 +65,11 @@ done
 access_mode=${SMOKE_ACCESS_MODE:-local}
 grafana_url=
 rustfs_url=
-gateway_url=
-backplane_url=
 case "$access_mode" in
   local) ;;
   proxy)
     grafana_url=https://darkforge.tail694fe2.ts.net:8447
     rustfs_url=https://darkforge.tail694fe2.ts.net:8451
-    gateway_url=https://darkforge.tail694fe2.ts.net:8443
-    backplane_url=https://darkforge.tail694fe2.ts.net:8445
     ;;
   *) echo 'SMOKE_ACCESS_MODE must be local or proxy' >&2; exit 2 ;;
 esac
@@ -81,8 +77,6 @@ sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
     -e "s#^OB_GRAFANA_URL=.*#OB_GRAFANA_URL=$grafana_url#" \
     -e "s#^OB_RUSTFS_URL=.*#OB_RUSTFS_URL=$rustfs_url#" \
     -e "s#^OB_RUSTFS_CONSOLE=.*#OB_RUSTFS_CONSOLE=$rustfs_console#" \
-    -e "s#^OB_GATEWAY_URL=.*#OB_GATEWAY_URL=$gateway_url#" \
-    -e "s#^OB_BACKPLANE_URL=.*#OB_BACKPLANE_URL=$backplane_url#" \
     -e "s#^OB_HTTP_PORT=.*#OB_HTTP_PORT=$http_port#" \
     -e "s#^OB_HTTPS_PORT=.*#OB_HTTPS_PORT=$https_port#" \
     -e "s#^OB_PUBLIC_PORT_SUFFIX=.*#OB_PUBLIC_PORT_SUFFIX=:$http_port#" \
@@ -90,9 +84,7 @@ sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
     -e "s#^OB_PLATFORM_SUBNET=.*#OB_PLATFORM_SUBNET=$subnet#" \
     -e "s#^OB_PLATFORM_IP_RANGE=.*#OB_PLATFORM_IP_RANGE=$subnet#" \
     -e "s#^OB_VOLUME_PREFIX=.*#OB_VOLUME_PREFIX=$COMPOSE_PROJECT_NAME#" \
-    -e "s#^OB_ALERTS=.*#OB_ALERTS=placeholder#" \
     -e "s#^OB_RUSTFS_CONSOLE_ALLOW=.*#OB_RUSTFS_CONSOLE_ALLOW=127.0.0.1/8 ::1#" \
-    -e "s#^OB_OPERATOR_ALLOW=.*#OB_OPERATOR_ALLOW=private_ranges#" \
     -e "s#^OB_STATE_DIR=.*#OB_STATE_DIR=$work/data#" \
     -e "s#^OB_BACKUP_DIR=.*#OB_BACKUP_DIR=$work/backups#" \
     -e "s#^COMPOSE_PROFILES=.*#COMPOSE_PROFILES=$profiles#" \
