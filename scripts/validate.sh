@@ -58,7 +58,7 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
     services = config['services']
     assert not any(value in path.read_text() for value in admin), f'{path}: Grafana admin password rendered'
     # Exact keys: no elevated mode, added capabilities or devices on the Collector.
-    assert set(services['alloy']) == {'command', 'environment', 'healthcheck', 'image', 'logging', 'mem_limit',
+    assert {key for key, value in services['alloy'].items() if value is not None} == {'command', 'environment', 'healthcheck', 'image', 'logging', 'mem_limit',
                                       'mem_reservation', 'networks', 'pids_limit', 'restart', 'user', 'volumes'}, sorted(services['alloy'])
     assert {volume['target'] for volume in services['alloy']['volumes']} == {
         '/etc/alloy/config.alloy', '/var/lib/alloy', '/var/run/docker.sock', '/rootfs', '/var/lib/alloy/textfile'}, 'Alloy mounts'
@@ -128,7 +128,7 @@ PY_IMAGES
 echo 'compose config and pins: PASS'
 # Alloy's unauthenticated UI and API show target labels; only bearer_token is redacted.
 OB_SCRAPE_BACKPLANE=true OB_BACKPLANE_OPERATIONS_TOKEN=validation-only-backplane-token \
-  docker compose --env-file "$work/.env" -f compose.yaml config --format json > "$work/token.out"
+  compose "$work" -f compose.yaml config --format json > "$work/token.out"
 python3 - "$work/token.out" <<'PY'
 import json, sys
 from pathlib import Path
@@ -162,7 +162,7 @@ original = (work / '.env').read_text()
 for mode in ('filesystem', 's3'):
     defaults = {name: service['image'] for name, service in
                 json.loads((work / (mode + '.json')).read_text())['services'].items()}
-    command = ['docker', 'compose', '--env-file', str(work / 'images.env'), '-f', 'compose.yaml']
+    command = ['docker', 'compose', '--env-file', str(work / 'images.env'), '--env-file', str(work / 'data/derived.env'), '-f', 'compose.yaml']
     if mode == 's3':
         command += ['-f', 'compose.s3.yaml', '--profile', 's3']
     for value in ('registry.example:5000/team/image:trial', 'local-experiment:dev', ''):

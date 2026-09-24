@@ -156,8 +156,8 @@ console origin when enabled, `features.backups` (the time of the newest Checkpoi
 `features.alerts` (true for webhook or email with SMTP, false for the placeholder). It is
 configuration, not observation: a version is what bootstrap configured, not what runs.
 Rerun bootstrap after changing images, origins, profiles or alert delivery. The document
-never contains secrets, digests, container names or host paths. A Checkpoint restore does
-not rewrite it.
+never contains secrets, digests, container names or host paths. A Checkpoint restore
+rewrites it the same way after its readiness probes pass.
 
 Liveness comes from `/health/<component>`. Every caller receives the upstream status code with
 an empty body; no client address unlocks upstream health details:

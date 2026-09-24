@@ -194,15 +194,23 @@ class BackupAttestationTests(unittest.TestCase):
         marker.write_text('filesystem')
         stack.env_file = root / '.env'
         stack.env_file.write_text('OB_GRAFANA_ADMIN_PASSWORD=secret')
+        # File secrets appear as read-only bind mounts at their target, as for Grafana.
         stack.config = {
             'services': {'loki': {'image': 'pinned', 'volumes': [
                 {'type': 'volume', 'source': 'loki-data', 'target': '/loki'},
-                {'type': 'bind', 'source': '/config', 'target': '/etc/loki', 'read_only': True}]}},
-            'volumes': {'loki-data': {'name': 'test_loki-data'}}}
+                {'type': 'bind', 'source': '/config', 'target': '/etc/loki', 'read_only': True}],
+                'secrets': [{'source': 'admin', 'target': '/run/secrets/admin'},
+                            {'source': 'ini', 'target': '/etc/loki/extra.ini'}]}},
+            'volumes': {'loki-data': {'name': 'test_loki-data'}},
+            'secrets': {'admin': {'name': 'test_admin', 'file': '/state/secrets/admin'},
+                        'ini': {'name': 'test_ini', 'file': '/state/secrets/extra.ini'}}}
         self.container = {'Id': 'id', 'Image': IMAGE_ID, 'Config': {'Image': 'pinned', 'Labels': {
             'com.docker.compose.service': 'loki', 'com.docker.compose.project': 'test'}},
             'Mounts': [{'Type': 'volume', 'Name': 'test_loki-data', 'Destination': '/loki', 'RW': True},
-                       {'Type': 'bind', 'Source': '/config', 'Destination': '/etc/loki', 'RW': False}]}
+                       {'Type': 'bind', 'Source': '/config', 'Destination': '/etc/loki', 'RW': False},
+                       {'Type': 'bind', 'Source': '/state/secrets/admin', 'Destination': '/run/secrets/admin', 'RW': False},
+                       {'Type': 'bind', 'Source': '/state/secrets/extra.ini', 'Destination': '/etc/loki/extra.ini',
+                        'RW': False}]}
         self.calls, self.stopped = [], False
         self.missing_volume, self.foreign_consumer = False, False
         self.restart_error = False
@@ -259,7 +267,7 @@ class BackupAttestationTests(unittest.TestCase):
     def test_changed_live_mounts_or_pins_refused_before_capture(self):
         import copy
         original = copy.deepcopy(self.container)
-        for change in ('prefix', 'bind', 'readonly', 'extra', 'image', 'local-only', 'unverified'):
+        for change in ('prefix', 'bind', 'secret', 'readonly', 'extra', 'image', 'local-only', 'unverified'):
             with self.subTest(change=change):
                 self.container = copy.deepcopy(original)
                 self.repo_digests = [PIN]
@@ -268,6 +276,8 @@ class BackupAttestationTests(unittest.TestCase):
                     self.container['Mounts'][0]['Name'] = 'old_loki-data'
                 elif change == 'bind':
                     self.container['Mounts'][1]['Source'] = '/other-config'
+                elif change == 'secret':
+                    self.container['Mounts'][2]['Source'] = '/other/secrets/admin'
                 elif change == 'readonly':
                     self.container['Mounts'][0]['RW'] = False
                 elif change == 'extra':

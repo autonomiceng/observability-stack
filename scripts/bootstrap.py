@@ -758,7 +758,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
         settings.update(present | fresh)
         # The env file records explicit shell choices and the Compose file selection, so later
         # Compose and Checkpoint commands resolve the same installation. Nothing else is rewritten.
-        recorded = {key: settings[key] for key in SAVED if key in os.environ and key not in DERIVED_ONLY}
+        recorded = {key: os.environ[key] for key in SAVED if key in os.environ and key not in DERIVED_ONLY}
         recorded["COMPOSE_FILE"] = settings["COMPOSE_FILE"]
         if "COMPOSE_PROFILES" in os.environ:
             recorded["COMPOSE_PROFILES"] = settings["COMPOSE_PROFILES"]

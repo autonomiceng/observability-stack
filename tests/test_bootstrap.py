@@ -179,6 +179,11 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("COMPOSE_PROJECT_NAME=observability-review\n", self.env.read_text())
         self.assertEqual((self.derived()["OB_PUBLIC_PORT_SUFFIX"], self.derived()["COMPOSE_PROJECT_NAME"]),
                          (":8080", "observability-review"))
+        # A shell choice is recorded as given; what bootstrap derives from it is not.
+        with patch.dict(os.environ, {"OB_PUBLIC_PORT_SUFFIX": ""}):
+            self.render()
+        self.assertIn("OB_PUBLIC_PORT_SUFFIX=\n", self.env.read_text())
+        self.assertEqual(self.derived()["OB_PUBLIC_PORT_SUFFIX"], ":8080")
 
     def test_grafana_secrets_are_files_readable_by_grafana_and_hidden_from_other_users(self):
         state = self.root / "data"
