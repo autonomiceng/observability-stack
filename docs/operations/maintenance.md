@@ -66,10 +66,20 @@ and cAdvisor's `container_start_time_seconds` is container creation time, so it 
 change when the same container restarts.
 
 All four gateway jobs are gated by `OB_SCRAPE_GATEWAY`. Postgres metrics come from
-`lg-postgres-exporter:9187`; Checkpoint metrics come from `lg-gateway:8081/metrics`
-without a Host override. Existing gateway installations must generate
-`LG_POSTGRES_EXPORTER_PASSWORD` through their bootstrap and recreate the exporter before
-the Postgres scrape succeeds. No gateway files are changed by this stack.
+`lg-postgres-exporter:9187`. Checkpoint metrics come from `lg-gateway:8081/metrics` and
+LiteLLM metrics (job `llm-gateway`) from `lg-gateway:8081/metrics/litellm`, both without a
+Host override. That gateway listener answers 404 to any source outside the gateway's
+`LG_CHECKPOINT_ALLOW`, so the setting must cover Alloy's Platform Network address. Alloy has
+no reserved address: Docker assigns one from `OB_PLATFORM_IP_RANGE`, and a recreated Alloy
+can receive a different one. The LiteLLM route needs an llm-gateway-stack release that
+serves `/metrics/litellm`; against an older gateway the `llm-gateway` target is down.
+Existing gateway installations must generate `LG_POSTGRES_EXPORTER_PASSWORD` through their
+bootstrap and recreate the exporter before the Postgres scrape succeeds. No gateway files
+are changed by this stack.
+
+Compose does not recreate Alloy when only `config.alloy` changes, and bootstrap does not
+either. After updating a checkout that changes `config.alloy`, run
+`docker compose up --detach --no-deps --force-recreate alloy` to load the new pipelines.
 
 Observability backup scripts atomically replace a `.prom` file under `OB_STATE_DIR/textfile`
 only after success. For example, the resulting file may contain:

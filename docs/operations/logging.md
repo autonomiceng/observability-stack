@@ -60,6 +60,11 @@ containers through the normal deployment procedure after changing these settings
 allow a whole network or the Docker bridge address to make a scrape succeed. Leave the
 switch off when Edge is not installed; observability starts independently either way.
 
+To collect gateway metrics, set `OB_SCRAPE_GATEWAY=true`. Alloy requests LiteLLM and
+Checkpoint metrics from `http://lg-gateway:8081` and the datastore exporters directly; the
+gateway must list Alloy's address in `LG_CHECKPOINT_ALLOW` and run its `metrics` profile.
+See [maintenance](maintenance.md) for the targets and alerts.
+
 ## Evidence and portability
 
 Run `scripts/smoke.sh` with a unique `SMOKE_PROJECT`, `SMOKE_HTTP_PORT` and `SMOKE_HTTPS_PORT`.
