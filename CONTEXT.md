@@ -42,7 +42,7 @@ _Avoid_: status observation, versions file
 **Platform Network**: the external Docker network `platform` shared by the stacks on one
 host for ingress and collection, with the default allocation `172.30.0.0/24`
 (`OB_PLATFORM_SUBNET`, `OB_PLATFORM_IP_RANGE`, the same values in every stack) and Platform
-Edge at `172.30.0.2`.
+Edge at `172.30.0.2` by default; another subnet needs the matching `OB_TRUSTED_PROXIES`.
 _Avoid_: default network, public network
 
 **Local Mode**: the default access mode, serving HTTP and internal-CA HTTPS on loopback
