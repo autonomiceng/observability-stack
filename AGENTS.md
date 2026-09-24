@@ -37,17 +37,16 @@ For delegated work, use the model choices, risk paths and brief templates in
 
 ## Where things live
 
-- `compose.yaml`: services, image versions and volumes. `compose.s3.yaml`: storage mount override.
-- `.env.example`: operator settings. `scripts/bootstrap.py`: secrets, network, readiness,
-  derived values (`data/derived.env`, beside the env file) and the Status Document
-  (`OB_STATE_DIR/console/status.json`). `scripts/retire-status-timer.sh`:
-  one-time removal of the version 1 status timer.
-- `config.alloy`: collection pipelines. `docker/{loki,mimir,tempo}/`: backend configuration.
+- `compose.yaml`: services, image pins and volumes. `compose.s3.yaml`: the storage mount override for the `s3` profile. `compose.proxy.yaml`: publishes HTTP only, selected by bootstrap in Proxy Mode.
+- `.env.example`: every operator setting, prefixed `OB_`, one comment per assignment, no secrets.
+- `scripts/bootstrap.py`: secrets, network, Compose file selection, derived values (`data/derived.env`, beside the env file), Grafana provisioning and file secrets under `OB_STATE_DIR`, readiness, and the Status Document (`OB_STATE_DIR/console/status.json`).
+- `scripts/backup.sh`, `scripts/restore.sh`, `scripts/checkpoint.py`: fenced Checkpoints and restore. `scripts/backup-drill.sh`, `scripts/backup_drill.py`, `scripts/recovery_assertions.py`: the recovery drill. `scripts/destroy.sh`: deliberate removal. `scripts/retire-status-timer.sh`: one-time removal of the version 1 status timer.
+- `scripts/validate.sh`: static gates. `scripts/smoke.sh`, `scripts/smoke_assertions.py`, `scripts/smoke_s3.py`: the Smoke Contract in both storage profiles.
+- `config.alloy`: collection pipelines. `docker/{loki,mimir,tempo}/`: backend configuration, one file per storage mode.
 - `docker/grafana/`: provisioned datasources, dashboard and alerts.
-- `docker/caddy/`: one Caddyfile for both access modes and the static Stack Console.
-- `scripts/validate.sh`, `scripts/smoke.sh`: validation and the Smoke Contract.
+- `docker/caddy/`: one Caddyfile for the three access modes and the static Stack Console.
 - `tests/`: Python unittest with a fake runner; no Docker calls.
-- `docs/operations/`: runbooks. `docs/conventions.md`: shared stack conventions.
+- `docs/DESIGN.md` the map, `docs/adr/` decisions, `docs/operations/` runbooks, `docs/agents/` guidance, `docs/conventions.md` shared stack conventions (vendored from platform-edge; never edit it here).
 
 Only Caddy publishes ports. Caddy, Grafana and Alloy join `platform`; backends stay private.
 List each service's environment explicitly. Prefix stack settings with `OB_`. Service and
@@ -63,6 +62,8 @@ If a rule here fights the task, say so and get human sign-off before breaking it
 
 ## Finish
 
-Run `scripts/validate.sh`, `python3 -m unittest discover -s tests`, and `scripts/smoke.sh` for
-image, config or bootstrap changes. Report exact commands and results, limitations and
-operator actions. A failed gate is a failed gate.
+Run `scripts/validate.sh`, `python3 -m unittest discover -s tests`, and `scripts/smoke.sh`
+(both `SMOKE_PROFILE` values when storage is involved) for image, configuration, Alloy or
+bootstrap changes; `scripts/backup-drill.sh` in both profiles for backup or recovery changes.
+Report exact commands and counts, limitations and operator actions. A failed or skipped
+gate is reported as such, never as a pass.

@@ -1,5 +1,17 @@
 # Maintenance
 
+How to apply a version bump, run Compose with the derived env file, select the S3 profile,
+configure alerts, read the status document, and find missing data.
+
+- [Updating images](#updating-images)
+- [Env files](#env-files)
+- [S3 profile](#s3-profile)
+- [Alerts and metric contracts](#alerts-and-metric-contracts)
+- [Investigating missing data](#investigating-missing-data)
+- [Resource failure](#resource-failure)
+- [Status document](#status-document)
+- [Image experiments](#image-experiments)
+
 ## Updating images
 
 1. Read upstream release notes, including storage and config migrations. Before editing pins or configuration, run `scripts/backup.sh` with the checkout matching the running installation and retain the original `.env` separately. See [backup and restore](backup.md).
@@ -187,7 +199,7 @@ Native `docker compose` applies the overrides directly. Tags and locally built i
 are allowed for unvalidated experiments, including stores. Use a Checkpoint before a
 persistent change; an image switch does not migrate data or change storage-mode rules.
 Run bootstrap after changing references to refresh configured version labels. The console
-reports the effective configuration at bootstrap time; it does not attest running content.
+reports the effective configuration at bootstrap time, not the running content.
 Shipped-default validation, smoke and recovery gates ignore installation and shell image
 overrides. Renovate continues to update the inline defaults through its native Compose
 manager and existing major/group policies. Checkpoint image requirements are in

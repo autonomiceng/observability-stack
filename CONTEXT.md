@@ -1,72 +1,66 @@
 # Observability Stack
 
-The shared operational view of the stacks on one host.
+The terms this repository uses, one sentence each. Use these words in code, docs and
+commits; avoid the listed alternatives.
 
-## Language
+**Collector**: the component (Alloy) that discovers producers and routes their logs,
+metrics and traces to a Backend.
+_Avoid_: agent, shipper
 
-**Collector**:
-The component that discovers producers and routes their logs, metrics and traces to a Backend.
-_Avoid_: Agent, shipper
+**Backend**: a durable store and query interface for one telemetry signal: Loki for logs,
+Mimir for metrics, Tempo for traces.
+_Avoid_: collector, database cluster
 
-**Backend**:
-A durable store and query interface for one telemetry signal: logs, metrics or traces.
-_Avoid_: Collector, database cluster
+**Dashboard**: a saved set of telemetry queries and visualizations for an operator's question.
+_Avoid_: console, landing page
 
-**Dashboard**:
-A saved set of telemetry queries and visualizations for an operator's question.
-_Avoid_: Console, landing page
+**Alert**: a periodically evaluated condition over telemetry, with a visible state and an
+optional delivery route.
+_Avoid_: notification, alarm message
 
-**Alert**:
-A periodically evaluated condition over telemetry, with a visible state and an optional delivery route.
-_Avoid_: Notification, alarm message
+**Checkpoint**: one consistent backup set of the persisted telemetry volumes, the
+repository configuration and the installation marker, taken with ingestion paused, and the
+unit of restore and rollback before a persistent change; the original `.env` secrets and
+the image bytes are kept separately.
+_Avoid_: snapshot, dump
 
-**Checkpoint**:
-One consistent backup set of configuration, secrets and persisted telemetry, taken with ingestion paused.
-It is the unit of restore and the rollback boundary before a persistent change.
-_Avoid_: Snapshot, dump
+**Stack Gateway**: the Caddy instance that is the only published entry, serving the Stack
+Console and routing to Grafana and the optional RustFS console.
+_Avoid_: collector, mesh
 
-**Stack Gateway**:
-The single published entry that serves the Stack Console and routes application requests.
-_Avoid_: Collector, mesh
+**Stack Console**: the unauthenticated page at the root hostname with this stack's
+application links, readiness, alert delivery state and the configured versions from the
+Status Document; it links no sibling stacks.
+_Avoid_: dashboard, admin UI
 
-**Stack Console**:
-The unauthenticated page with this stack's application links, readiness, alert delivery state
-and the configured versions from the Status Document. It links no sibling stacks.
-_Avoid_: Dashboard, admin UI
+**Status Document**: the public Status v2 file bootstrap writes after readiness and the
+Stack Gateway serves at `/status.json`, recording each component's configured image,
+version, profile state and health path plus whether backups and alert delivery are
+configured, never observed runtime state.
+_Avoid_: status observation, versions file
 
-**Status Document**:
-The public Status v2 file bootstrap writes after readiness and the Stack Gateway serves at
-`/status.json` in every access mode: each component's configured image and version, whether
-the selected profiles enable it, its health path, application origins, whether backup and
-alert delivery are configured, and the newest Checkpoint time at that bootstrap. It records
-configuration, never observed runtime state.
-_Avoid_: Status observation, versions file
+**Platform Network**: the external Docker network `platform` shared by the stacks on one
+host for ingress and collection, with the default allocation `172.30.0.0/24`
+(`OB_PLATFORM_SUBNET`, `OB_PLATFORM_IP_RANGE`, the same values in every stack) and Platform
+Edge at `172.30.0.2` by default; another subnet needs the matching `OB_TRUSTED_PROXIES`.
+_Avoid_: default network, public network
 
-**Platform Network**:
-The trusted Docker network shared by sibling stacks on one host for ingress and collection, with the
-fixed allocation `172.30.0.0/24` and Platform Edge at the reserved address `172.30.0.2`.
-_Avoid_: Default network, public network
+**Local Mode**: the default access mode, serving HTTP and internal-CA HTTPS on loopback
+with HTTP as the browser scheme by default.
+_Avoid_: development mode
 
-**Local Mode**:
-Local access over both HTTP and privately issued HTTPS, with HTTP as the canonical origin by default.
-_Avoid_: Development mode
+**Public Mode**: the access mode for an operator's domain, with Let's Encrypt HTTPS and
+HTTP redirects.
+_Avoid_: production mode
 
-**Public Mode**:
-Publicly certified HTTPS access through the Stack Gateway on an operator's domain, with HTTP redirects.
-_Avoid_: Production mode
+**Proxy Mode**: the access mode behind Platform Edge or another gateway that handles HTTPS,
+listening on HTTP only and trusting the configured proxies for the forwarded scheme.
+_Avoid_: public mode, local mode
 
-**Proxy Mode**:
-HTTP access behind Platform Edge, which owns the external TLS connection and forwards the configured public origin.
-_Avoid_: Public Mode, Local Mode
+**Pinned Version**: the default image reference in `compose.yaml`, a stable tag plus an
+immutable digest that has passed the Smoke Contract.
+_Avoid_: latest, floating tag
 
-**Pinned Version**:
-An image identified by a stable tag and immutable digest that has passed the Smoke Contract.
-_Avoid_: Latest, floating tag
-
-**Effective Image**:
-The image selected by native Compose after applying an optional `OB_*_IMAGE` override.
-A tag or local image is an operator experiment; the shipped Pinned Version remains the default.
-
-**Smoke Contract**:
-The executable proof that a disposable fresh installation is healthy, authenticated and ingesting telemetry.
-_Avoid_: Unit suite, static validation
+**Smoke Contract**: the executable check (`scripts/smoke.sh`) that a disposable fresh
+installation is healthy, authenticated and ingesting telemetry.
+_Avoid_: unit suite, static validation
