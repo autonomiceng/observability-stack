@@ -59,7 +59,9 @@ def check(env_file: Path, origin: str, project: str) -> None:
     base = 'http://' + origin
     grafana = 'http://grafana.' + origin
     lines, _ = read_env(env_file)
-    settings = {match['key']: bootstrap.unquote(match['value']) for match in map(bootstrap.ENV_LINE.match, lines) if match}
+    # The values bootstrap resolved and Compose used.
+    settings = bootstrap.assignments(lines) | bootstrap.assignments(
+        bootstrap.derived_env(env_file).read_text().splitlines())
     check_access(env_file, settings)
     check_rustfs_console(settings, env_file)
     check_status(settings, env_file)
@@ -188,7 +190,7 @@ def check_status(settings, env_file):
     for service in ('grafana', 'loki', 'tempo', 'mimir', 'alloy'):
         status, _, body = request('/health/' + service)
         assert (status, body) == (200, b''), (service, status, body[:80])
-    inside = subprocess.run(['docker', 'compose', '--env-file', str(env_file), 'exec', '-T', 'caddy',
+    inside = subprocess.run(['docker', 'compose', *bootstrap.env_files(env_file), 'exec', '-T', 'caddy',
                              'wget', '-q', '-O', '-', '--header=Host: ' + settings['OB_PUBLIC_DOMAIN'],
                              'http://127.0.0.1/health/grafana'], capture_output=True, text=True, timeout=15)
     assert (inside.returncode, inside.stdout) == (0, ''), 'loopback peer must receive an empty health body'
@@ -244,7 +246,7 @@ def check_rustfs_console(settings, env_file):
         assert status == 200 and location is None and body and b'<html' not in body[:100].lower(), url.path
     assert request('/rustfs/admin/v3/accountinfo')[0] == 403
     # A real container peer is outside the fixture's exact host-gateway allowlist.
-    denied = subprocess.run(['docker', 'compose', '--env-file', str(env_file), 'exec', '-T', 'caddy',
+    denied = subprocess.run(['docker', 'compose', *bootstrap.env_files(env_file), 'exec', '-T', 'caddy',
                              'wget', '-S', '-q', '-O', '/dev/null', '--header=Host: ' + authority,
                              'http://127.0.0.1/rustfs/console/'], capture_output=True, text=True, timeout=15)
     assert denied.returncode != 0 and re.search(r'HTTP/1\.[01] 404(?: |\r?\n)', denied.stderr), \
@@ -259,7 +261,7 @@ def check_access(env_file, settings):
     if settings['OB_ACCESS_MODE'] == 'proxy':
         check_proxy_access(env_file, settings)
         return
-    command = ['docker', 'compose', '--env-file', str(env_file)]
+    command = ['docker', 'compose', *bootstrap.env_files(env_file)]
     certificate = subprocess.run(command + ['exec', '-T', 'caddy', 'cat',
                                  '/data/caddy/pki/authorities/local/root.crt'],
                                  check=True, capture_output=True, text=True).stdout
@@ -314,7 +316,7 @@ def ingest_marker(env_file, origin, state):
     # An unlabelled producer exercises Docker collection while disposable Compose logs are dropped.
     root = Path(__file__).resolve().parent.parent
     config = subprocess.run(['docker', 'compose', '--project-directory', str(root),
-                             '--env-file', str(env_file), 'config', '--format', 'json'],
+                             *bootstrap.env_files(env_file), 'config', '--format', 'json'],
                             check=True, capture_output=True, text=True)
     image = json.loads(config.stdout)['services']['caddy']['image']
     producer = subprocess.run(['docker', 'run', '-d', '--network', 'none', '--memory', '32m',

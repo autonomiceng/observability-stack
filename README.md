@@ -11,7 +11,7 @@ Logs, metrics and traces for everything on your host, in one Grafana. Self-hoste
 
 You run a few Docker stacks on one machine and want to see what they are doing without SSHing in and tailing logs. This stack runs the Grafana LGTM set: Loki for logs, Mimir for metrics, Tempo for traces, and Alloy as the one collector that feeds them.
 
-Alloy discovers host containers, excluding disposable smoke/drill Compose logs and ships its logs with the Compose project and service as labels. Collect gateway metrics with `OB_SCRAPE_GATEWAY=true`, Edge metrics with `OB_SCRAPE_EDGE=true` after allowing the scraper address at Edge, or backplane metrics with `OB_SCRAPE_BACKPLANE=true` and `OB_BACKPLANE_OPERATIONS_TOKEN` set to its operations token. All three are off by default, so this stack starts on its own. Self, container, host filesystem, textfile and Backend metrics are always scraped. Grafana comes with the datasources wired, a starter dashboard and a few alert rules.
+Alloy discovers host containers, excluding disposable smoke/drill Compose logs and ships its logs with the Compose project and service as labels. Collect gateway metrics with `OB_SCRAPE_GATEWAY=true`, Edge metrics with `OB_SCRAPE_EDGE=true` after allowing the scraper address at Edge, or backplane metrics with `OB_SCRAPE_BACKPLANE=true` and `OB_BACKPLANE_OPERATIONS_TOKEN` set to its operations token. All three are off by default, so this stack starts on its own. Self, host filesystem, textfile and Backend metrics are always scraped. Grafana comes with the datasources wired, a starter dashboard and a few alert rules.
 
 Everything stores to local volumes by default. An optional profile moves the backends to S3 on RustFS.
 
@@ -24,7 +24,7 @@ git clone https://github.com/autonomiceng/observability-stack.git && cd observab
 python3 scripts/bootstrap.py
 ```
 
-Bootstrap writes `.env` from `.env.example` with a generated Grafana admin password, creates or validates the shared `platform` network allocation, starts everything and waits for it to be healthy. About a minute.
+Bootstrap writes `.env` from `.env.example` with a generated Grafana admin password, creates or validates the shared `platform` network allocation, starts everything and waits for it to be healthy. About a minute. After that `.env` is yours: bootstrap writes the values it derives to `data/derived.env`, so run Compose yourself as `docker compose --env-file .env --env-file data/derived.env ...`; see [env files](docs/operations/maintenance.md#env-files).
 
 Alerts evaluate from the start but go nowhere until you configure delivery. Until then bootstrap reports `degraded` with `alert_delivery_placeholder` and the console shows it. Set `OB_ALERT_WEBHOOK_URL`, or `OB_ALERT_EMAIL` plus `OB_SMTP_URL`, in `.env` and run bootstrap again; see [alert setup](docs/operations/maintenance.md#alerts-and-metric-contracts).
 
@@ -88,7 +88,6 @@ Each runs alone. Shared conventions are in [docs/conventions.md](docs/convention
 - [Backup, restore and recovery drill](docs/operations/backup.md)
 - [Design](docs/DESIGN.md), [vocabulary](CONTEXT.md), [decisions](docs/adr/)
 
-Alert rules that need a metric no stack exposes yet are marked pending in the alert file rather than silently never firing.
 
 ## Development
 
@@ -104,7 +103,7 @@ CI runs validation and unit tests on pull requests, pushes to `main`/`develop`, 
 
 ## Security
 
-Report vulnerabilities through the [security policy](SECURITY.md). Alloy reads the Docker socket to discover containers; treat the host it runs on as trusted.
+Report vulnerabilities through the [security policy](SECURITY.md). Alloy runs as root with the Docker socket to discover containers; treat the host it runs on as trusted.
 
 ## License
 

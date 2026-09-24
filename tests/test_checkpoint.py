@@ -194,15 +194,23 @@ class BackupAttestationTests(unittest.TestCase):
         marker.write_text('filesystem')
         stack.env_file = root / '.env'
         stack.env_file.write_text('OB_GRAFANA_ADMIN_PASSWORD=secret')
+        # File secrets appear as read-only bind mounts at their target, as for Grafana.
         stack.config = {
             'services': {'loki': {'image': 'pinned', 'volumes': [
                 {'type': 'volume', 'source': 'loki-data', 'target': '/loki'},
-                {'type': 'bind', 'source': '/config', 'target': '/etc/loki', 'read_only': True}]}},
-            'volumes': {'loki-data': {'name': 'test_loki-data'}}}
+                {'type': 'bind', 'source': '/config', 'target': '/etc/loki', 'read_only': True}],
+                'secrets': [{'source': 'admin', 'target': '/run/secrets/admin'},
+                            {'source': 'ini', 'target': '/etc/loki/extra.ini'}]}},
+            'volumes': {'loki-data': {'name': 'test_loki-data'}},
+            'secrets': {'admin': {'name': 'test_admin', 'file': '/state/secrets/admin'},
+                        'ini': {'name': 'test_ini', 'file': '/state/secrets/extra.ini'}}}
         self.container = {'Id': 'id', 'Image': IMAGE_ID, 'Config': {'Image': 'pinned', 'Labels': {
             'com.docker.compose.service': 'loki', 'com.docker.compose.project': 'test'}},
             'Mounts': [{'Type': 'volume', 'Name': 'test_loki-data', 'Destination': '/loki', 'RW': True},
-                       {'Type': 'bind', 'Source': '/config', 'Destination': '/etc/loki', 'RW': False}]}
+                       {'Type': 'bind', 'Source': '/config', 'Destination': '/etc/loki', 'RW': False},
+                       {'Type': 'bind', 'Source': '/state/secrets/admin', 'Destination': '/run/secrets/admin', 'RW': False},
+                       {'Type': 'bind', 'Source': '/state/secrets/extra.ini', 'Destination': '/etc/loki/extra.ini',
+                        'RW': False}]}
         self.calls, self.stopped = [], False
         self.missing_volume, self.foreign_consumer = False, False
         self.restart_error = False
@@ -259,7 +267,7 @@ class BackupAttestationTests(unittest.TestCase):
     def test_changed_live_mounts_or_pins_refused_before_capture(self):
         import copy
         original = copy.deepcopy(self.container)
-        for change in ('prefix', 'bind', 'readonly', 'extra', 'image', 'local-only', 'unverified'):
+        for change in ('prefix', 'bind', 'secret', 'readonly', 'extra', 'image', 'local-only', 'unverified'):
             with self.subTest(change=change):
                 self.container = copy.deepcopy(original)
                 self.repo_digests = [PIN]
@@ -268,6 +276,8 @@ class BackupAttestationTests(unittest.TestCase):
                     self.container['Mounts'][0]['Name'] = 'old_loki-data'
                 elif change == 'bind':
                     self.container['Mounts'][1]['Source'] = '/other-config'
+                elif change == 'secret':
+                    self.container['Mounts'][2]['Source'] = '/other/secrets/admin'
                 elif change == 'readonly':
                     self.container['Mounts'][0]['RW'] = False
                 elif change == 'extra':
@@ -783,6 +793,61 @@ finally:
         self.assertEqual({signal.getsignal(sig) for sig in signals}, {interrupted})
         self.assertFalse(checkpoint.complete_checkpoints(self.stack.backups))
         self.assertFalse((self.stack.state / 'textfile/checkpoint.prom').exists())
+
+
+class RestoreStartTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / 'backups').mkdir()
+        self.env = self.root / '.env'
+        self.env.write_text('OB_GRAFANA_ADMIN_PASSWORD=admin-secret\nOB_S3_ACCESS_KEY=access\nOB_S3_SECRET_KEY=secret\n'
+                            f'OB_STATE_DIR={self.root}/data\nOB_BACKUP_DIR={self.root}/backups\n'
+                            'OB_PLATFORM_SUBNET=10.40.0.0/24\nOB_PLATFORM_IP_RANGE=10.40.0.128/25\n'
+                            'OB_ACCESS_MODE=proxy\nOB_GRAFANA_URL=https://host.tail-example.ts.net:8447\n')
+        self.calls = []
+        refs = checkpoint.bootstrap.images(checkpoint.ROOT / 'compose.yaml')
+
+        def runner(argv):
+            self.calls.append(argv)
+            if argv[:2] == ['docker', 'compose'] and argv[-3:] == ['config', '--format', 'json']:
+                every = '*' in argv
+                return subprocess.CompletedProcess(argv, 0, json.dumps({'name': 'restore-test', 'services': {
+                    name: {'image': ref} for name, ref in refs.items() if every or name not in ('rustfs', 'rustfs-init')}}), '')
+            if argv[:3] == ['docker', 'network', 'inspect']:
+                return subprocess.CompletedProcess(argv, 1, '', '')
+            return subprocess.CompletedProcess(argv, 0, '', '')
+        self.runner = runner
+
+    def test_restore_start_publishes_status_v2_after_readiness_on_the_configured_allocation(self):
+        with patch.dict(checkpoint.os.environ, {'OB_SCHEME': ''}, clear=True):
+            stack = checkpoint.Stack(self.env, runner=self.runner)
+            # Compose prefers the shell over env files, so the shell carries the resolved value.
+            self.assertEqual(checkpoint.os.environ['OB_SCHEME'], 'https')
+        derived = self.root / 'data/derived.env'
+        self.assertIn('OB_GRAFANA_AUTHORITY=host.tail-example.ts.net:8447\n', derived.read_text())
+        self.assertEqual(stack.command[4:8], ['--env-file', str(self.env), '--env-file', str(derived)])
+        status = self.root / 'data/console/status.json'
+        stack.wait_ready = Mock(side_effect=lambda: self.assertFalse(status.exists(), 'status before readiness'))
+        stack.start()
+        stack.wait_ready.assert_called_once_with()
+        document = json.loads(status.read_text())
+        self.assertEqual((document['contract'], document['stack']), (2, 'observability'))
+        self.assertEqual({c['id']: c['enabled'] for c in document['components']},
+                         {name: name != 'rustfs' for name, *_ in checkpoint.bootstrap.COMPONENTS})
+        self.assertEqual(document['components'][1]['url'], 'https://host.tail-example.ts.net:8447')
+        self.assertFalse((self.root / 'data/console/versions.json').exists())
+        self.assertNotIn('admin-secret', status.read_text())
+        self.assertIn(['docker', 'network', 'create', '--driver', 'bridge', '--subnet', '10.40.0.0/24',
+                       '--ip-range', '10.40.0.128/25', '--gateway', '10.40.0.1', 'platform'], self.calls)
+        # Restore validates the same allocation before it writes any volume.
+        stack.check_empty = Mock()
+        with patch.object(checkpoint, 'verify_checkpoint'), \
+                patch.object(checkpoint.bootstrap, 'ensure_network', side_effect=RuntimeError('stop')) as network, \
+                self.assertRaisesRegex(RuntimeError, 'stop'):
+            checkpoint.restore(stack, self.root / 'backups')
+        network.assert_called_once_with(stack.runner, 'platform', '10.40.0.0/24', '10.40.0.128/25')
 
 
 class CheckpointVerificationTests(unittest.TestCase):

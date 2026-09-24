@@ -13,12 +13,13 @@ reproduction and impact. Keep credentials, telemetry and exploit details out of 
 
 ## Boundaries
 
-Only Caddy publishes ports, bound to loopback by default. Grafana requires login and disables
+Only Caddy publishes ports, bound to loopback by default, with a read-only root filesystem and
+only `NET_BIND_SERVICE`. Grafana requires login and disables
 anonymous access and signup. Loki, Mimir, Tempo and RustFS stay on the project's private
 network. Backends have no authentication layer in this single-host deployment.
 
-Alloy has privileged host access, host filesystem mounts and the Docker socket for collection.
-A socket mounted read-only still permits Docker API mutations. Treat Alloy and all members of
+Alloy runs as root with Docker's default capabilities, a read-only host root mount and the
+Docker socket for collection. A socket mounted read-only still permits Docker API mutations. Treat Alloy and all members of
 `platform` as trusted host workloads; the internal Alloy HTTP/OTLP listeners are not public
 APIs. The console, readiness routes and `/status.json` are unauthenticated and carry no
 credentials. In public mode `/status.json` exposes to the internet each component's

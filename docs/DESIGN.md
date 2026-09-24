@@ -13,13 +13,15 @@ Browser -> Caddy (:80/:443 on OB_BIND_HOST) -> Grafana
 Docker socket -> Alloy -> Loki (logs, 30d)
 lg-gateway:8081/metrics/litellm  --+
 bp-server:3000/metrics           --+-> Alloy -> Mimir (metrics, 30d)
-Alloy self / cAdvisor / textfile --+
+Alloy self / host fs / textfile   --+
 OTLP producer -> Alloy :4317/:4318 -> Tempo (traces, 7d)
 ```
 
 Caddy joins `platform` as `ob-gateway`, Grafana as `ob-grafana`; Alloy joins as `ob-alloy`.
 Every service also uses the project's default network. Loki, Tempo, Mimir
-and optional RustFS never join `platform`. Only Caddy publishes host ports.
+and optional RustFS never join `platform`. Only Caddy publishes host ports. Caddy runs like
+Platform Edge's: read-only root filesystem, `/tmp` tmpfs, all capabilities dropped except
+`NET_BIND_SERVICE`, and `no-new-privileges`.
 
 ## Collection
 
@@ -41,9 +43,11 @@ gateway Valkey/Postgres exporters and gateway Checkpoint metrics when enabled
 disabled targets. Another
 relabel rule removes the backplane target unless `OB_SCRAPE_BACKPLANE=true`; the scrape
 authenticates with `OB_BACKPLANE_OPERATIONS_TOKEN`, which never becomes a target label. Enabled but missing stacks produce failed scrapes; disabled targets are absent, while Collector readiness stays independent of scrape success. Mimir receives
-remote-write at `/api/v1/push`; Grafana queries its `/prometheus` API. Embedded cAdvisor
-supplies container resource metrics. Embedded textfile
-collection reads `OB_STATE_DIR/textfile/*.prom`. The same unix exporter collects host
+remote-write at `/api/v1/push`; Grafana queries its `/prometheus` API. There are no container
+resource metrics: no shipped panel or alert used cAdvisor, which needed full host privilege (ADR-0001).
+Alloy runs as root with Docker's default capabilities, the Docker socket and a read-only host
+root mount.
+Embedded textfile collection reads `OB_STATE_DIR/textfile/*.prom`. The same unix exporter collects host
 filesystem bytes/inodes through `/rootfs`; Alloy also scrapes all three Backends.
 The gateway supplies its Valkey and Postgres exporter containers. OTLP passes through a
 memory limiter before batching; each
@@ -87,7 +91,8 @@ Grafana provisions three fixed datasource UIDs (`loki`, `mimir`, `tempo`), the `
 one dashboard and thirteen alerts. Anonymous access and user signup are disabled. The admin
 password is generated once. Without a webhook or email/SMTP delivery configuration, bootstrap
 provisions a placeholder contact point and reports degraded readiness instead of refusing.
-Generated provisioning lives in `OB_STATE_DIR`.
+Generated provisioning lives in `OB_STATE_DIR`. The admin password and SMTP settings reach
+Grafana only as Compose file secrets under `OB_STATE_DIR/secrets`.
 Metric contracts and absent-source behavior are in `operations/maintenance.md`.
 
 ## Health and verification
@@ -100,7 +105,10 @@ An optional `OB_GRAFANA_URL` overrides Grafana's browser origin and domain witho
 changing its internal hostname or the listener mode. In proxy mode Caddy matches its
 full authority, including the port, so other services on the same machine hostname
 stay separate. Platform Edge preserves that authority and supplies trusted HTTPS
-forwarding. Bootstrap derives the authority and hostname consumed by Compose.
+forwarding. Bootstrap derives the authority and hostname consumed by Compose and writes every
+resolved value to `data/derived.env` beside the operator-owned `.env`; Compose commands
+that create containers pass both files (see
+[env files](operations/maintenance.md#env-files)).
 The console's `/links.json` contains this stack's Grafana and optional RustFS origins, including when
 the root console is opened through an IP or an arbitrary local HTTP hostname. The console
 shows this stack only; Platform Edge's console owns cross-stack navigation.

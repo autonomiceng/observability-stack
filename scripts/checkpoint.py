@@ -98,17 +98,19 @@ class Stack:
         lines, secrets = bootstrap.read_env(self.env_file)
         if set(secrets) != bootstrap.MANAGED:
             raise RuntimeError('restore the original .env with all secrets before proceeding')
-        settings = {m['key']: bootstrap.unquote(m['value']) for m in map(bootstrap.ENV_LINE.match, lines) if m}
         if any(key in os.environ and os.environ[key] != value for key, value in secrets.items()):
             raise RuntimeError('shell secrets differ from the original .env')
-        settings.update({k: v for k, v in os.environ.items() if k.startswith('OB_') or k == 'COMPOSE_PROFILES'})
+        # Resolve as bootstrap does, so a restore into a fresh checkout recreates data/derived.env.
+        settings = bootstrap.resolve_settings(lines, ROOT / '.env.example') | secrets
+        bootstrap.write_derived(self.env_file, settings)
+        bootstrap.sync_shell(settings)
         self.settings = settings
         self.mode = 's3' if 's3' in settings.get('COMPOSE_PROFILES', '').split(',') else 'filesystem'
         self.backups = (ROOT / settings.get('OB_BACKUP_DIR', './data/backups')).resolve()
         self.state = (ROOT / settings.get('OB_STATE_DIR', './data')).resolve()
         if not self.backups.is_dir():
             raise RuntimeError('OB_BACKUP_DIR must exist; verify its storage is mounted')
-        self.command = ['docker', 'compose', '--project-directory', str(ROOT), '--env-file', str(self.env_file),
+        self.command = ['docker', 'compose', '--project-directory', str(ROOT), *bootstrap.env_files(self.env_file),
                         '-f', str(ROOT / 'compose.yaml')]
         if self.mode == 's3':
             self.command += ['-f', str(ROOT / 'compose.s3.yaml'), '--profile', 's3']
@@ -335,7 +337,10 @@ class Stack:
             expected = self.config['services'][service]
             if container['Image'] != self.image_ids[service]:
                 raise RuntimeError('backup requires configured image identity matching the running services')
-            mounts = set()
+            # Compose bind-mounts file secrets read-only at their target.
+            mounts = {('bind', str(Path(self.config['secrets'][secret['source']]['file']).resolve()),
+                       secret.get('target') or '/run/secrets/' + secret['source'], False)
+                      for secret in expected.get('secrets', [])}
             for mount in expected.get('volumes', []):
                 kind = mount['type']
                 source = self.volume_name(mount['source']) if kind == 'volume' else mount['source']
@@ -387,14 +392,20 @@ class Stack:
                 raise RuntimeError(f'restore refused: non-empty or unreadable volume {name}') from error
 
     def start(self):
-        bootstrap.write_versions(ROOT, ROOT / 'compose.yaml', self.settings, services=self.config['services'])
+        configured_at = bootstrap.utc(datetime.now(timezone.utc))
+        # Every service, then those the selected profiles enable, as bootstrap publishes them.
+        available = json.loads(self.dc('--profile', '*', 'config', '--format', 'json'))['services']
+        bootstrap.write_links(self.state, self.settings)
         (self.state / 'textfile').mkdir(parents=True, exist_ok=True)
         bootstrap.write_provisioning(ROOT, self.state, self.settings)
         bootstrap.ensure_volumes(self.runner, self.settings.get('OB_VOLUME_PREFIX') or bootstrap.PROJECT,
                                  self.project, self.mode == 's3')
-        bootstrap.ensure_network(self.runner, self.settings.get('OB_PLATFORM_NETWORK', 'platform'))
+        bootstrap.ensure_network(self.runner, self.settings.get('OB_PLATFORM_NETWORK', 'platform'),
+                                 *bootstrap.platform_allocation(self.settings))
         self.dc('up', '-d', '--wait', '--wait-timeout', '300')
         self.wait_ready()
+        bootstrap.write_status(self.state, bootstrap.status_document(
+            available, self.config['services'], self.settings, self.backups, configured_at))
 
     def wait_ready(self, restart=False, timeout=120, settle=0):
         settle_until = time.monotonic() + settle
@@ -643,7 +654,8 @@ def restore(stack, source):
     verify_checkpoint(stack, source)
     stack.check_empty()
     bootstrap.alert_config(stack.settings)
-    bootstrap.ensure_network(stack.runner, stack.settings.get('OB_PLATFORM_NETWORK', 'platform'))
+    bootstrap.ensure_network(stack.runner, stack.settings.get('OB_PLATFORM_NETWORK', 'platform'),
+                             *bootstrap.platform_allocation(stack.settings))
     for key in stack.volumes:
         name = stack.volume_name(key)
         checked(['docker', 'volume', 'create', '--label', f'com.docker.compose.project={stack.project}',

@@ -61,6 +61,9 @@ class BootstrapTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def derived(self):
+        return bootstrap.assignments((self.root / "data/derived.env").read_text().splitlines())
+
     def render(self, **kwargs):
         return bootstrap.bootstrap(
             ["--env-file", str(self.env), "--template", str(self.template), "--render-only"],
@@ -119,6 +122,13 @@ class BootstrapTests(unittest.TestCase):
         with patch.dict(os.environ, {"OB_GRAFANA_ADMIN_PASSWORD": "operator-choice"}):
             self.assertEqual(self.render(), 0)
         self.assertIn("OB_GRAFANA_ADMIN_PASSWORD=operator-choice\n", self.env.read_text())
+        for value in ("pa$word", "'quoted'", "trailing ", "two\nlines"):
+            self.env.unlink(missing_ok=True)
+            with self.subTest(value=value), patch.dict(os.environ, {"OB_GRAFANA_ADMIN_PASSWORD": value}), \
+                    self.assertRaises(bootstrap.Refused) as refused:
+                self.render()
+            self.assertEqual(refused.exception.code, "env_repair_required")
+            self.assertFalse(self.env.exists())
 
     def test_later_render_refuses_a_conflicting_shell_secret(self):
         self.render()
@@ -147,20 +157,68 @@ class BootstrapTests(unittest.TestCase):
         self.assertTrue(any("data at" in f for f in found))
         self.assertTrue(any("grafana-data" in f for f in found))
 
-    def test_versions_json_reads_tags_from_compose(self):
-        compose = Path(__file__).resolve().parent.parent / "compose.yaml"
-        bootstrap.write_versions(self.root, compose, {"OB_S3_SECRET_KEY": "never-publish"}, services={
-            "grafana": {"image": "private.example/custom:grafana-test"},
-            "loki": {"image": "user:password@registry/loki:secret"},
-            "tempo": {"image": "grafana/tempo@sha256:" + "a" * 64},
-            "unexpected": {"image": "secret"}})
-        doc = json.loads((self.root / "data" / "console" / "versions.json").read_text())
-        self.assertEqual(doc["images"]["grafana"], "grafana-test")
-        self.assertEqual(doc["images"]["loki"], "unknown")
-        self.assertEqual(doc["images"]["tempo"], "sha256:" + "a" * 64)
-        for private in ("never-publish", "password", "unexpected", "private.example"):
-            self.assertNotIn(private, json.dumps(doc))
-        self.assertEqual(set(doc["images"]), set(bootstrap.images(compose)))
+    def test_derived_values_move_to_derived_env_and_a_rerun_leaves_env_unchanged(self):
+        self.env.write_text("OB_HTTP_PORT=8080\nOB_ACCESS_MODE=proxy\nOB_TRUSTED_PROXIES=192.0.2.2/32\n"
+                            "OB_GRAFANA_URL=https://host.tail-example.ts.net:8447\n"
+                            # Saved by an earlier bootstrap: every one is recomputed.
+                            "COMPOSE_PROJECT_NAME=observability-stack\nOB_GRAFANA_URL_HOST=stale.example\n"
+                            "OB_GRAFANA_AUTHORITY=stale.example:1\nOB_RUSTFS_URL_HOST=\nOB_RUSTFS_AUTHORITY=\n")
+        self.render()
+        migrated = self.env.read_text()
+        for key in ("COMPOSE_PROJECT_NAME", *bootstrap.DERIVED_ONLY):
+            self.assertNotIn(key + "=", migrated)
+        derived = self.derived()
+        self.assertEqual(list(derived), [*bootstrap.SAVED, "OB_GRAFANA_INI_HMAC"])
+        self.assertEqual((derived["COMPOSE_PROJECT_NAME"], derived["OB_GRAFANA_URL_HOST"], derived["OB_GRAFANA_AUTHORITY"],
+                          derived["OB_SCHEME"], derived["OB_GRAFANA_HOST"]),
+                         ("observability-stack", "host.tail-example.ts.net", "host.tail-example.ts.net:8447",
+                          "https", "grafana.localhost"))
+        self.assertFalse(set(derived.values()) & set(bootstrap.read_env(self.env)[1].values()), "no secret in derived.env")
+        self.assertEqual((self.root / "data/derived.env").stat().st_mode & 0o777, 0o600)
+        before = self.env.read_bytes()
+        self.render()
+        self.assertEqual(self.env.read_bytes(), before)
+        self.assertEqual(self.derived(), derived)
+        # A derived suffix equal to the recomputed one moves out; an operator's project name stays.
+        self.env.write_text("OB_HTTP_PORT=8080\nOB_PUBLIC_PORT_SUFFIX=:8080\nCOMPOSE_PROJECT_NAME=observability-review\n")
+        self.render()
+        self.assertNotIn("OB_PUBLIC_PORT_SUFFIX", self.env.read_text())
+        self.assertIn("COMPOSE_PROJECT_NAME=observability-review\n", self.env.read_text())
+        self.assertEqual((self.derived()["OB_PUBLIC_PORT_SUFFIX"], self.derived()["COMPOSE_PROJECT_NAME"]),
+                         (":8080", "observability-review"))
+        # A shell choice is recorded as given; what bootstrap derives from it is not.
+        with patch.dict(os.environ, {"OB_PUBLIC_PORT_SUFFIX": ""}):
+            self.render()
+        self.assertIn("OB_PUBLIC_PORT_SUFFIX=\n", self.env.read_text())
+        self.assertEqual(self.derived()["OB_PUBLIC_PORT_SUFFIX"], ":8080")
+
+    def test_grafana_secrets_are_files_readable_by_grafana_and_hidden_from_other_users(self):
+        state = self.root / "data"
+        state.mkdir(mode=0o755)
+        (state / "grafana.ini").write_text("[smtp]\npassword = old\n")
+        settings = {"OB_GRAFANA_ADMIN_PASSWORD": "admin-secret", "OB_ALERT_EMAIL": "ops@observe.test",
+                    "OB_SMTP_URL": "smtps://user:smtp-secret@smtp.observe.test"}
+        # Checkpoint restore runs under umask 077.
+        previous = os.umask(0o077)
+        try:
+            bootstrap.write_provisioning(self.template.parent, state, settings)
+        finally:
+            os.umask(previous)
+        secrets_dir = state / "secrets"
+        modes = {path.name: path.stat().st_mode & 0o777 for path in (state, secrets_dir, *secrets_dir.iterdir())}
+        # Grafana is uid 472 in group 0: files are world-readable, directories are not.
+        self.assertEqual(modes, {"data": 0o700, "secrets": 0o700, "grafana-admin": 0o644, "grafana.ini": 0o644})
+        self.assertEqual((secrets_dir / "grafana-admin").read_text(), "admin-secret")
+        self.assertIn('password = """smtp-secret"""', (secrets_dir / "grafana.ini").read_text())
+        self.assertFalse((state / "grafana.ini").exists(), "the old world-readable ini is removed")
+        self.assertEqual((state / "console").stat().st_mode & 0o777, 0o755)
+        # Grafana is recreated when the SMTP secret changes, without the credential in its environment.
+        revisions = []
+        for smtp in (settings["OB_SMTP_URL"], "smtps://user:rotated@smtp.observe.test"):
+            bootstrap.write_derived(self.env, settings | {"OB_SMTP_URL": smtp})
+            revisions.append(self.derived()["OB_GRAFANA_INI_HMAC"])
+        self.assertNotEqual(*revisions)
+        self.assertNotIn("secret", (self.root / "data/derived.env").read_text())
 
     def installation(self):
         """A rendered installation whose bootstrap runs from this temporary checkout."""
@@ -464,11 +522,8 @@ class BootstrapTests(unittest.TestCase):
             with self.subTest(scheme=scheme, http=http):
                 self.env.write_text(f'OB_ACCESS_MODE=local\nOB_SCHEME={scheme}\nOB_HTTP_PORT={http}\nOB_HTTPS_PORT={https}\n')
                 self.render()
-                self.assertIn(f'OB_PUBLIC_PORT_SUFFIX={expected}\n', self.env.read_text())
-                before = self.env.read_text()
-                self.render()
-                self.assertEqual(self.env.read_text(), before)
-                self.assertEqual(before.count('OB_PUBLIC_PORT_SUFFIX='), 1)
+                self.assertEqual(self.derived()['OB_PUBLIC_PORT_SUFFIX'], expected)
+                self.assertNotIn('OB_PUBLIC_PORT_SUFFIX=', self.env.read_text())
 
     def test_existing_volumes_without_marker_refuse_with_all_secrets_present(self):
         self.render()
@@ -505,9 +560,10 @@ class BootstrapTests(unittest.TestCase):
     def test_suffix_not_derived_behind_edge(self):
         self.env.write_text('OB_ACCESS_MODE=proxy\nOB_TRUSTED_PROXIES=192.0.2.2\nOB_SCHEME=https\nOB_HTTP_PORT=18180\nOB_HTTPS_PORT=18543\n')
         self.render()
-        self.assertNotIn('OB_PUBLIC_PORT_SUFFIX=:', self.env.read_text())
-        # The resolved allocation is saved so later runs validate the same network.
-        self.assertIn('OB_PLATFORM_SUBNET=172.30.0.0/24\nOB_PLATFORM_IP_RANGE=172.30.0.128/25', self.env.read_text())
+        derived = self.derived()
+        self.assertEqual(derived['OB_PUBLIC_PORT_SUFFIX'], '')
+        self.assertEqual((derived['OB_PLATFORM_SUBNET'], derived['OB_PLATFORM_IP_RANGE']),
+                         ('172.30.0.0/24', '172.30.0.128/25'))
 
     def test_access_defaults_and_invalid_configuration(self):
         for mode, expected in [("local", "http"), ("public", "https"), ("proxy", "https")]:
@@ -639,7 +695,7 @@ class BootstrapTests(unittest.TestCase):
                     "OB_PUBLIC_PORT_SUFFIX": ":18080"}
         bootstrap.access_config(settings)
         self.assertEqual(settings["OB_GRAFANA_HOST"], "grafana.localhost")
-        bootstrap.write_versions(self.root, self.template.parent / "compose.yaml", settings, services={})
+        bootstrap.write_links(self.root, settings)
         self.assertEqual(json.loads((self.root / "console/links.json").read_text()),
                          {"grafana": "http://grafana.localhost:18080"})
         settings["OB_ACCESS_MODE"] = "public"
@@ -661,11 +717,11 @@ class BootstrapTests(unittest.TestCase):
             bootstrap.access_config(settings)
             scheme = "http" if mode == "local" else "https"
             self.assertEqual(bootstrap.grafana_origin(settings), scheme + "://grafana.observe.example.com:9443")
-            settings["OB_GRAFANA_URL"] = "https://darkforge.tail694fe2.ts.net:8447"
+            settings["OB_GRAFANA_URL"] = "https://host.tail-example.ts.net:8447"
             bootstrap.access_config(settings)
             self.assertEqual(bootstrap.grafana_origin(settings), settings["OB_GRAFANA_URL"])
-            self.assertEqual(settings["OB_GRAFANA_URL_HOST"], "darkforge.tail694fe2.ts.net")
-            self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "darkforge.tail694fe2.ts.net:8447")
+            self.assertEqual(settings["OB_GRAFANA_URL_HOST"], "host.tail-example.ts.net")
+            self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "host.tail-example.ts.net:8447")
             self.assertEqual(settings["OB_GRAFANA_HOST"], "grafana.observe.example.com")
             settings["OB_GRAFANA_URL"] = ""
             bootstrap.access_config(settings)
@@ -701,7 +757,7 @@ class BootstrapTests(unittest.TestCase):
     def test_generated_grafana_origin_and_console_links(self):
         source = self.template.parent
         (self.root / "compose.yaml").write_text((source / "compose.yaml").read_text())
-        origin = "https://darkforge.tail694fe2.ts.net:8447"
+        origin = "https://host.tail-example.ts.net:8447"
         for _ in range(2):
             _, existing = bootstrap.read_env(self.env)
             retained = "".join(f"{key}={value}\n" for key, value in existing.items())
@@ -710,11 +766,10 @@ class BootstrapTests(unittest.TestCase):
             with patch.object(bootstrap, "__file__", str(self.root / "scripts/bootstrap.py")), \
                  patch.object(bootstrap, "wait_ready"):
                 self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner_with()), 0)
-            lines, _ = bootstrap.read_env(self.env)
-            settings = {m['key']: bootstrap.unquote(m['value']) for m in map(bootstrap.ENV_LINE.match, lines) if m}
+            settings = self.derived()
             self.assertEqual(settings["OB_GRAFANA_URL"], origin)
-            self.assertEqual(settings["OB_GRAFANA_URL_HOST"], "darkforge.tail694fe2.ts.net")
-            self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "darkforge.tail694fe2.ts.net:8447")
+            self.assertEqual(settings["OB_GRAFANA_URL_HOST"], "host.tail-example.ts.net")
+            self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "host.tail-example.ts.net:8447")
             self.assertEqual(json.loads((self.root / "data/console/links.json").read_text()), {"grafana": origin})
             self.assertEqual(settings["OB_TRUSTED_PROXIES"], "192.0.2.2/32")
 
@@ -723,12 +778,12 @@ class BootstrapTests(unittest.TestCase):
             settings = {"COMPOSE_PROFILES": profile, "OB_STATE_DIR": str(self.root)}
             bootstrap.access_config(settings)
             self.assertEqual(settings["OB_RUSTFS_CONSOLE"], "false")
-            bootstrap.write_versions(self.root, self.template.parent / "compose.yaml", settings, services={})
+            bootstrap.write_links(self.root, settings)
             self.assertNotIn("rustfs", json.loads((self.root / "console/links.json").read_text()))
         settings["OB_RUSTFS_CONSOLE"] = "true"
         bootstrap.access_config(settings)
         self.assertEqual(bootstrap.rustfs_origin(settings), "http://rustfs.localhost")
-        bootstrap.write_versions(self.root, self.template.parent / "compose.yaml", settings, services={})
+        bootstrap.write_links(self.root, settings)
         self.assertEqual(json.loads((self.root / "console/links.json").read_text())["rustfs"],
                          "http://rustfs.localhost")
         self.env.write_text("OB_RUSTFS_CONSOLE=true\n")
@@ -804,7 +859,7 @@ class BootstrapTests(unittest.TestCase):
         marker = self.root / "data/installation/storage-mode"
         marker.parent.mkdir(parents=True)
         marker.write_text("s3\n")
-        self.env.write_text(self.env.read_text().replace("OB_RUSTFS_CONSOLE=false", "OB_RUSTFS_CONSOLE=true"))
+        self.env.write_text(self.env.read_text() + "OB_RUSTFS_CONSOLE=true\n")
         with patch.object(bootstrap, "__file__", str(self.root / "scripts/bootstrap.py")), \
              patch.object(bootstrap, "wait_ready"):
             self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner_with()), 0)

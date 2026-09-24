@@ -28,9 +28,6 @@ def prepare_checkout(source, target):
     start = config.index('discovery.docker "host"')
     end = config.index('discovery.relabel "gateway"')
     config = config[:start] + config[end:]
-    start = config.index('prometheus.exporter.cadvisor "containers"')
-    end = config.index('prometheus.exporter.unix "textfile"')
-    config = config[:start] + config[end:]
     start = config.index('prometheus.exporter.unix "textfile"')
     end = config.index('// Exporter targets', start)
     config = config[:start] + '''prometheus.exporter.unix "textfile" {
@@ -43,10 +40,9 @@ def prepare_checkout(source, target):
 ''' + config[end:]
     (target / 'config.alloy').write_text(config)
     compose = (target / 'compose.yaml').read_text()
-    host_mounts = ('/var/run/docker.sock:', '/:/rootfs:', '/var/run:', '/sys:', '/dev/disk:', '/var/lib/docker:')
+    host_mounts = ('/var/run/docker.sock:', '/:/rootfs:')
     compose = '\n'.join(line for line in compose.splitlines()
-                        if line.strip() != 'privileged: true'
-                        and not any(line.strip().startswith('- ' + mount) for mount in host_mounts)) + '\n'
+                        if not any(line.strip().startswith('- ' + mount) for mount in host_mounts)) + '\n'
     (target / 'compose.yaml').write_text(compose)
     return target
 
@@ -144,8 +140,6 @@ def main():
         'OB_VOLUME_PREFIX': project,
         'OB_LOKI_IMAGE': image_tag, 'OB_PLATFORM_SUBNET': subnet, 'OB_PLATFORM_IP_RANGE': subnet,
     }
-    # Restore validates the network from the shell allocation; the env file carries the same values.
-    os.environ.update(OB_PLATFORM_SUBNET=subnet, OB_PLATFORM_IP_RANGE=subnet)
     text = (root / '.env.example').read_text()
     for key, value in settings.items():
         text = re.sub(rf'^{key}=.*$', f'{key}={value}', text, flags=re.M)

@@ -29,9 +29,9 @@ class RecoveryDrillTests(unittest.TestCase):
             root = drill.prepare_checkout(checkpoint.ROOT, Path(tmp) / 'checkout')
             config = (root / 'config.alloy').read_text()
             compose = (root / 'compose.yaml').read_text()
-            for component in ('discovery.docker', 'loki.source.docker', 'prometheus.exporter.cadvisor'):
+            for component in ('discovery.docker', 'loki.source.docker'):
                 self.assertNotIn(component, config)
-            for host_path in ('/rootfs:', '/var/run/docker.sock:', '/var/lib/docker:', 'privileged: true'):
+            for host_path in ('/rootfs:', '/var/run/docker.sock:'):
                 self.assertNotIn(host_path, compose)
             self.assertIn('prometheus.remote_write', config)
             self.assertIn('otelcol.receiver.otlp', config)

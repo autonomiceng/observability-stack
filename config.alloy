@@ -172,20 +172,7 @@ prometheus.scrape "self" {
   forward_to = [prometheus.remote_write.local.receiver]
 }
 
-// Embedded exporters keep Alloy as the only collector process.
-prometheus.exporter.cadvisor "containers" {
-  docker_only = true
-  store_container_labels = false
-  allowlisted_container_labels = ["com.docker.compose.project", "com.docker.compose.service"]
-}
-
-prometheus.scrape "containers" {
-  targets = prometheus.exporter.cadvisor.containers.targets
-  job_name = "containers"
-  scrape_interval = "15s"
-  forward_to = [prometheus.remote_write.local.receiver]
-}
-
+// The embedded exporter keeps Alloy as the only collector process.
 prometheus.exporter.unix "textfile" {
   set_collectors = ["textfile", "filesystem"]
   rootfs_path = "/rootfs"

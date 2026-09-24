@@ -12,7 +12,7 @@ Read before changing anything: `CONTEXT.md` (vocabulary), `docs/DESIGN.md` (the 
 1. **Killing by pattern.** Never `pkill -f`, `pgrep | kill`, or kill a PID found by matching a name, path or worktree string. Your agent process has the worktree path in its argv. Kill only a PID captured at spawn, or the owner of your port from `ss -H -ltnp` after confirming `/proc/<pid>/cwd` is your worktree.
 2. **Touching data you cannot rebuild.** Never delete installation volumes unless the user asked for data loss by name. Changing storage mode is a migration. Restore a Checkpoint when an upgrade changes a data format.
 3. **Mutating the running stack to inspect it.** Read files and `docker compose config` to inspect. `up`, `down`, `restart` and `pull` need the user's authorization. Smoke owns only its fresh disposable project.
-4. **Trusting the Docker socket mount.** Alloy has host-root access for container discovery and metrics. A read-only socket mount does not limit Docker API operations. Keep the platform network trusted.
+4. **Trusting the Docker socket mount.** Alloy runs as root with Docker's default capabilities and the Docker socket, which is host-root equivalent. A read-only socket mount does not limit Docker API operations. Keep the platform network trusted.
 
 ## Communication
 
@@ -38,8 +38,9 @@ For delegated work, use the model choices, risk paths and brief templates in
 ## Where things live
 
 - `compose.yaml`: services, image versions and volumes. `compose.s3.yaml`: storage mount override.
-- `.env.example`: operator settings. `scripts/bootstrap.py`: secrets, network, readiness and
-  the Status Document (`OB_STATE_DIR/console/status.json`). `scripts/retire-status-timer.sh`:
+- `.env.example`: operator settings. `scripts/bootstrap.py`: secrets, network, readiness,
+  derived values (`data/derived.env`, beside the env file) and the Status Document
+  (`OB_STATE_DIR/console/status.json`). `scripts/retire-status-timer.sh`:
   one-time removal of the version 1 status timer.
 - `config.alloy`: collection pipelines. `docker/{loki,mimir,tempo}/`: backend configuration.
 - `docker/grafana/`: provisioned datasources, dashboard and alerts.

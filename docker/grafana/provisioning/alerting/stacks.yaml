@@ -584,8 +584,3 @@ groups:
                   reducer:
                     type: last
                     params: []
-
-# Rules removed from this file. Grafana keeps provisioned rules until told otherwise.
-deleteRules:
-  - orgId: 1
-    uid: container-restarts

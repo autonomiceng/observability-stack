@@ -60,10 +60,10 @@ monitoring and configure real alert delivery; the default placeholder delivers n
    for cleanup. Never remove Backend chunks, blocks, SQLite, WAL, indexes or Alloy's
    positions/WAL by hand. Shorter retention is asynchronous and may not rescue a full disk.
 4. Restore at least 30% free bytes and sufficient inodes. If services exited, start
-   RustFS first in S3 mode (`docker compose up -d --wait rustfs`), then
-   `docker compose up -d loki mimir tempo grafana caddy`. Check all Backend readiness
+   RustFS first in S3 mode (`docker compose --env-file .env --env-file data/derived.env up -d --wait rustfs`),
+   then the same command with `up -d loki mimir tempo grafana caddy`. Check all Backend readiness
    routes and logs. Allow WAL replay and compaction to finish before restarting Alloy.
-5. Run `docker compose up -d --wait alloy`, resume producers gradually, and verify recent
+5. Run the same command with `up -d --wait alloy`, resume producers gradually, and verify recent
    logs, metrics and traces. Watch pending samples fall and failure rates return to zero.
    Record the missing time range: rotated source logs, rejected samples and expired OTLP
    retries cannot be recreated by restarting the stack.
