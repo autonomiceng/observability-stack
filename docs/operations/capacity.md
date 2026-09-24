@@ -22,9 +22,8 @@ Each long-lived service also has a 512-process limit:
 
 The filesystem limits total 7424 MiB; S3 totals 9472 MiB. Reservations total 3008 MiB
 and 3520 MiB respectively. Reservations are soft pressure thresholds, not measured usage.
-These are **provisional budgets**, with 2–4 times the reservation as room for bursts.
-No measured baseline was available in this slice: `docker stats --no-stream` failed
-with Docker socket permission denied. Do not treat these as load-tested production limits.
+These are **provisional budgets**, with 2 to 4 times the reservation as room for bursts.
+No measured baseline was available when they were set. Do not treat these as load-tested production limits.
 The host verifier must measure steady ingestion, a representative query burst, compaction
 and restart/WAL replay before accepting or adjusting them:
 

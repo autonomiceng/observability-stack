@@ -1,7 +1,15 @@
 # observability-stack: systems design
 
 One host, one Compose project, one place to investigate the gateway and backplane.
-Vocabulary lives in `../CONTEXT.md`; the Owner's binding decision is ADR-0001.
+Vocabulary lives in [CONTEXT.md](../CONTEXT.md); the binding decision is
+[ADR-0001](adr/0001-lgtm-on-one-host.md). This document is the map; the runbooks in
+`operations/` hold the procedures.
+
+- [Shape](#shape)
+- [Collection](#collection)
+- [Storage and provisioning](#storage-and-provisioning)
+- [Health and verification](#health-and-verification)
+- [Scope](#scope)
 
 ## Shape
 
@@ -81,11 +89,11 @@ with historical telemetry and Grafana state checks.
 On an existing S3 installation, `OB_RUSTFS_CONSOLE=true` enables RustFS's native human
 console. Caddy forwards its entire operator-allowlisted origin to private port 9001,
 including assets, STS, S3 and admin APIs, preserving Host, scheme and the full external
-port. `OB_RUSTFS_URL` supports a separate port on the same Tailscale hostname as Grafana;
-standalone access uses `rustfs.<domain>`. Native root-user authentication is required.
+port. `OB_RUSTFS_URL` sets its browser origin when another gateway presents it; standalone
+access uses `rustfs.<domain>`. Native root-user authentication is required.
 The feature defaults off, refuses filesystem storage, adds no network membership or
 published port, and leaves storage selection and image overrides unchanged. Agents use
-their owning stack's Files API. See `operations/ingress.md`.
+the Files API of their own stack. See [ingress](operations/ingress.md#rustfs-admin-console).
 
 Grafana provisions three fixed datasource UIDs (`loki`, `mimir`, `tempo`), the `Stacks` folder,
 one dashboard and thirteen alerts. Anonymous access and user signup are disabled. The admin

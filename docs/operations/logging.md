@@ -1,5 +1,12 @@
 # Runtime logging and collection
 
+Where runtime logs go, what Alloy collects from siblings, and the override for hosts
+without journald.
+
+- [Runtime logging audit](#runtime-logging-audit)
+- [Platform Edge and optional collection](#platform-edge-and-optional-collection)
+- [Evidence and portability](#evidence-and-portability)
+
 The deployment default is Linux Docker with a working host journal. Every Compose service
 uses `journald` with `cache-disabled: "true"`. Continuous runtime logs go to stdout/stderr
 and the host journal. No Docker JSON/local cache files or application runtime log files are

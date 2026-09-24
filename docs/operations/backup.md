@@ -1,5 +1,13 @@
 # Backup and restore
 
+Take, keep and restore Checkpoints of the telemetry volumes, and prove the pair with the
+recovery drill.
+
+- [Checkpoint contents and fence](#checkpoint-contents-and-fence)
+- [Restore into an empty project](#restore-into-an-empty-project)
+- [RPO, RTO and scheduling](#rpo-rto-and-scheduling)
+- [Verification and troubleshooting](#verification-and-troubleshooting)
+
 ```sh
 scripts/backup.sh
 scripts/restore.sh /mnt/backups/20260917T020000000000Z
@@ -30,7 +38,7 @@ Each UTC timestamp directory is mode 0700 and contains:
 
 Keep the **original `.env` separately** in protected configuration backup or a password
 manager, and retain the matching checkout. The manifest records environment key names; the scripts
-never copy secret values from the env file into the Checkpoint. Manifests cannot attest that supplied secret
+never copy secret values from the env file into the Checkpoint. Manifests cannot prove that supplied secret
 values match those used at capture. Checks that all managed keys exist and that shell values
 agree with the supplied file do not establish historical identity. Restore warns about
 captured key names absent from the supplied file, without displaying values; it cannot detect
@@ -38,7 +46,7 @@ changed values under retained names. Supplying the original secrets remains an o
 requirement. Readiness alone does not verify credentials or decryptability. Verify Grafana
 login and any credential-dependent integrations after restore. The drill authenticates its
 historical dashboard query with the preserved original Grafana password; S3 inventories also
-use the preserved access credentials. It does not attest every external integration secret.
+use the preserved access credentials. It does not check every external integration secret.
 
 Volume data can contain credentials and sensitive telemetry, so the entire set requires
 protection. Caddy certificate/config
@@ -67,13 +75,13 @@ any verifiable immutable reference are refused before fencing or creating a capt
 Helpers use the verified Caddy content ID with pulling disabled; image resolution and
 helpers never pull. A mutable tag alone cannot reproduce a Checkpoint.
 
-Image custody is external to the data Checkpoint. Preserve the recorded references in a
+Image bytes are kept outside the data Checkpoint. Preserve the recorded references in a
 retained registry, or retain a protected image archive whose load has been tested on the
 recovery host's Docker store type and platform. A same-host archive roundtrip does not
 qualify a different engine/store type or architecture. After loading, every captured
 immutable reference must resolve to the expected content before recovery can proceed;
 a tag-only load without those references is unsupported. Capture reports this obligation
-for mutable configurations. Unpublished aliases need verified archive custody because
+for mutable configurations. Unpublished aliases need a verified image archive because
 Docker cannot pull them from a registry. Never infer an off-host image backup from a
 successful data Checkpoint.
 
@@ -189,7 +197,7 @@ any required overrides. Retain those overrides in `.env` for subsequent native C
 operations. Original secrets, storage mode and configuration must still match.
 Legacy v1 manifests remain accepted with their original byte-identical configuration checkout
 and shipped pin list; effective active images must resolve to those same immutable references.
-The newer Checkpoint scripts can be used with that checkout. Neither manifest version attests
+The newer Checkpoint scripts can be used with that checkout. Neither manifest version proves
 historical secret values.
 
 Failed restore leaves partial storage for diagnosis. Use another empty destination after
@@ -318,4 +326,22 @@ completes.
 Upstream sources: [frontend metrics](https://github.com/grafana/tempo/blob/v3.0.3/modules/frontend/v1/frontend.go)
 and [queue lifecycle](https://github.com/grafana/tempo/blob/v3.0.3/modules/frontend/queue/queue.go).
 
-Manifest v2 records `imageCustody: "external"` as informational metadata. It means image bytes are retained separately from the Checkpoint; restore verifies recorded references regardless of this annotation.
+Manifest v2 records `imageCustody: "external"` as informational metadata. It means image bytes are kept separately from the Checkpoint; restore verifies recorded references regardless of this annotation.
+
+## Verification and troubleshooting
+
+A capture succeeded when backup exited 0, the timestamp directory holds `manifest.json`,
+every service is healthy again and `OB_STATE_DIR/textfile/checkpoint.prom` carries the new
+timestamp. A restore succeeded when restore exited 0, all five HTTP probes passed, Grafana
+login works and a query for a known pre-Checkpoint time range returns data. The drill
+proves both on a disposable project and prints `RESTORE DRILL PASSED`.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| Backup refuses before fencing | Image drift, a tag without a verifiable immutable reference, a missing source volume, another consumer of a volume, or too little free space. The error names the check. |
+| `FAIL: unsupported archive member` | A link or special file inside a volume. Inspect the incomplete archive privately; do not flatten production files. |
+| A stop exits nonzero or `OOMKilled` | Capture aborts without a manifest and resumes services. Raise `--stop-timeout`, check the service log, retry. |
+| Tempo quiescence expires | Direct query clients are still active. Pause them and retry; see [Tempo query quiescence](#tempo-query-quiescence). |
+| Restore refuses a moved tag | Set the corresponding `OB_*_IMAGE` to the captured reference the error prints. |
+| Restore refuses non-empty storage | Restore never clears a target. Use another `OB_VOLUME_PREFIX`, project and `OB_STATE_DIR`. |
+| `storage_mode_unknown` after restore | The installation marker is missing. Recover it from the Checkpoint's `installation/` directory. |

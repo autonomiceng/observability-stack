@@ -1,5 +1,11 @@
 # Disk full
 
+How to see a full disk coming, what fails, and how to recover without losing stores.
+
+- [What fails first](#what-fails-first)
+- [Safe cleanup and recovery](#safe-cleanup-and-recovery)
+- [What stops first](#what-stops-first)
+
 Keep 30% headroom for compaction. Grafana warns after five minutes below 15% available
 bytes or 15% free inodes on any writable host filesystem, including the Docker data
 filesystem. Alloy's existing unix exporter reads host mount information from
