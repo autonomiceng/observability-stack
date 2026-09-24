@@ -44,7 +44,8 @@ Grafana. `OB_STATE_DIR` is made private (mode 0700) because the generated SMTP
 configuration may contain credentials. Re-run bootstrap after changing delivery settings. SMTP URLs use
 `smtp://user:password@host:587` (required STARTTLS) or `smtps://user:password@host:465`;
 percent-encode reserved characters in credentials. The email address is also the sender.
-An unauthenticated relay can omit credentials. With neither configured, bootstrap still
+An unauthenticated relay can omit credentials. Bootstrap refuses an email address without
+an SMTP URL, or the reverse, with `alert_delivery_invalid`. With neither configured, bootstrap still
 starts the stack with a placeholder contact point that delivers nothing, reports `degraded`
 with `alert_delivery_placeholder`, and `/health/alerts` returns 503, which the Stack Console
 shows as a degraded Alert delivery badge. Configure delivery and rerun bootstrap to clear it.

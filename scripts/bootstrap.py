@@ -346,7 +346,11 @@ def alert_config(settings: dict[str, str]) -> tuple[str, dict[str, str]]:
         if url.scheme not in ("http", "https") or not url.hostname:
             raise Refused("alert_delivery_invalid", "OB_ALERT_WEBHOOK_URL must be an HTTP(S) URL")
         return "webhook", {}
-    if settings.get("OB_ALERT_EMAIL") and not settings["OB_ALERT_EMAIL"].endswith("@example.invalid") and settings.get("OB_SMTP_URL"):
+    email = "" if settings.get("OB_ALERT_EMAIL", "").endswith("@example.invalid") else settings.get("OB_ALERT_EMAIL", "")
+    if bool(email) != bool(settings.get("OB_SMTP_URL")):
+        # Half an email route is a typo, not a choice to run without delivery.
+        raise Refused("alert_delivery_invalid", "set both OB_ALERT_EMAIL and OB_SMTP_URL, or neither")
+    if email:
         url = urllib.parse.urlsplit(settings["OB_SMTP_URL"])
         if url.scheme not in ("smtp", "smtps") or not url.hostname:
             raise Refused("alert_delivery_invalid", "OB_SMTP_URL must be smtp[s]://[user:password@]host:port")

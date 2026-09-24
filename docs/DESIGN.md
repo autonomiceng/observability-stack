@@ -108,7 +108,9 @@ Local readiness verifies both protocols using the installation's public CA certi
 memory. Private keys remain in the existing Caddy data volume; no host trust is installed.
 
 Caddy serves exact `/health/{caddy,grafana,loki,tempo,mimir,alloy,rustfs}` routes and
-`/health/alerts`. Each returns the upstream status with an empty body to every caller.
+`/health/alerts`. Upstream probes return the upstream status with an empty body to every
+caller; `/health/caddy` answers from Caddy itself and `/health/alerts` returns a fixed
+`{"status":"degraded"}` 503 or `{"status":"ready"}` 200.
 Caddy's Docker healthcheck probes only Caddy's own `/health/status`, so one slow backend
 does not mark the gateway unhealthy or fail `up --wait`. Mimir and Tempo are distroless, so
 bootstrap checks each backend's readiness over HTTP through Caddy rather than installing

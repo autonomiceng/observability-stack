@@ -311,6 +311,10 @@ class BootstrapTests(unittest.TestCase):
         for value in ("placeholder", "https://sibling.test:8443"):
             with self.subTest(value=value), patch.dict(os.environ, dict.fromkeys(RETIRED, value)):
                 self.assertEqual(start("".join(f"{key}={value}\n" for key in RETIRED)), first)
+        for partial in ({"OB_ALERT_EMAIL": "ops@observe.test"}, {"OB_SMTP_URL": "smtps://smtp.test:465"}):
+            with self.subTest(partial=partial), self.assertRaises(bootstrap.Refused) as refused:
+                bootstrap.alert_config(partial)
+            self.assertEqual(refused.exception.code, "alert_delivery_invalid")
         report, _, _ = start("OB_ALERT_WEBHOOK_URL=https://hooks.test/alerts\n")
         self.assertEqual((report["status"], report["problems"]), ("ready", []))
         self.assertFalse((self.root / "data/console/alerts-degraded.json").exists())
