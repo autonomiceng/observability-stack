@@ -1,5 +1,12 @@
 # Host capacity
 
+What to reserve for this stack, the memory limits Compose applies, and how to recover
+from OOM kills and full disks.
+
+- [Memory envelope](#memory-envelope)
+- [OOM recovery](#oom-recovery)
+- [Disk sizing](#disk-sizing)
+
 Six long-lived containers run by default. S3 adds RustFS and a bucket initializer.
 Reserve 4 CPU cores, 10 GiB available RAM for filesystem mode or 12 GiB for S3, and
 40 GiB free SSD space, in addition to sibling stacks and the OS. Prefer 8 cores and
@@ -73,8 +80,8 @@ that service's limit within host capacity. A crash loop is not evidence of corru
 
 Loki and Mimir retain 30 days; Tempo retains seven. Measure daily compressed growth times
 retention, plus WALs, indexes and temporary compaction space. Keep at least 30% free.
-Docker logs rotate at 10 MB times three files per container in this project. Other
-projects control their own log rotation. Monitor both bytes and inodes, ingestion
+Runtime logs go to the host journal (journald, no Docker log files); the host owns their
+retention, see [logging](logging.md). Monitor both bytes and inodes, ingestion
 failures and Alloy's remote-write backlog; follow [disk-full.md](disk-full.md).
 Reserve at least the full persisted volume size per uncompressed Checkpoint, plus
 space for a restore. A local RustFS volume shares the host failure domain. Replicate

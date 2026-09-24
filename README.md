@@ -113,7 +113,7 @@ SMOKE_PROFILE=s3 scripts/smoke.sh      # RustFS restart persistence
 scripts/backup-drill.sh                # disposable Checkpoint restore and measured RTO
 ```
 
-CI runs validation and unit tests on every push and pull request, and both smoke profiles and both recovery drills on pull requests, weekly and on demand. See [CONTRIBUTING.md](CONTRIBUTING.md).
+CI runs validation and unit tests on pushes to `main` and `develop`, on pull requests, weekly and on demand, and both smoke profiles and both recovery drills on pull requests, weekly and on demand. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
 

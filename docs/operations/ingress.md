@@ -204,8 +204,9 @@ Caddy and can briefly fail S3 writes; schedule the interruption and take a
 Standalone ingress uses `rustfs.<domain>` (`rustfs.localhost` for an IP root), with an
 optional `OB_RUSTFS_HOST` override; links follow the scheme and port suffix. Local Mode
 serves HTTP and internal-CA HTTPS; Public Mode needs DNS for the extra hostname and issues
-its certificate only while enabled. Disabled, the console card is hidden and the origin
-answers 404. Caddy forwards the whole origin to private port 9001, including the console
+its certificate only while enabled. Disabled, the console card is hidden, the HTTP and proxy
+routes answer 404, and the standalone HTTPS site for the console hostname is not
+provisioned at all. Caddy forwards the whole origin to private port 9001, including the console
 assets, `/rustfs/admin/v3/*`, STS and S3 requests, preserving Host and port; only GET and
 HEAD `/` requests accepting HTML redirect to `/rustfs/console/`. Rewriting Host, dropping
 the port or routing only the UI breaks same-origin requests and SigV4.
@@ -213,9 +214,21 @@ the port or routing only the UI breaks same-origin requests and SigV4.
 `OB_RUSTFS_CONSOLE_ALLOW` (default `127.0.0.1/8 ::1`) lists the client addresses allowed
 to reach the origin; other clients receive 404. Keep it separate from `OB_TRUSTED_PROXIES`
 and never allow a whole tailnet or Docker subnet. Behind Platform Edge the console is not a
-Tailnet Origin: for a session, reach it over the host with an SSH tunnel to the loopback
-port and a hosts entry mapping `rustfs.<domain>` to `127.0.0.1`, as Edge's Tailscale
-runbook describes. RustFS stays off the Platform Network; Caddy is its only ingress.
+Tailnet Origin; reach it for a session over the host. A connection to the published
+loopback port reaches Caddy from the project network's gateway, not from `127.0.0.1`, so
+allow that one address for the session:
+
+```sh
+docker network inspect observability-stack_default --format '{{(index .IPAM.Config 0).Gateway}}'
+```
+
+Add it as a `/32` to `OB_RUSTFS_CONSOLE_ALLOW` (for example
+`OB_RUSTFS_CONSOLE_ALLOW="127.0.0.1/8 ::1 172.19.0.1/32"`), run bootstrap, then from your
+machine `ssh -L 18180:127.0.0.1:18180 <host>`, add a hosts entry mapping `rustfs.<domain>`
+to `127.0.0.1`, and open `http://rustfs.<domain>:18180/rustfs/console/`; Caddy routes the
+console by that hostname, so an IP URL does not reach it. Sign in, and afterwards remove
+the address again and rerun bootstrap. RustFS stays off the Platform Network; Caddy is its
+only ingress.
 
 Humans log in with the RustFS root credentials `OB_S3_ACCESS_KEY` and `OB_S3_SECRET_KEY`
 from the private `.env`. These are administrative credentials, not an agent's scoped S3
@@ -263,7 +276,7 @@ in [status document](maintenance.md#status-document).
 | --- | --- |
 | `access_mode_invalid`, `access_host_invalid`, `access_port_invalid` | `OB_ACCESS_MODE`, a hostname or a port setting is malformed; the message names it. |
 | `compose_file_conflict` | A shell `COMPOSE_FILE` disagrees with the recorded selection, a selected file is missing, or the list lacks the overlays for the selected storage and access modes. Unset the shell value or edit `.env`. |
-| `platform_network_mismatch` | The `platform` network exists with another subnet or range. Stop every stack on it, `docker network rm platform`, rerun bootstrap. |
+| `platform_network_mismatch` | The shared network exists with another subnet or range. Stop every stack on it, `docker network rm` the network the error names (`OB_PLATFORM_NETWORK`, default `platform`), rerun bootstrap. |
 | `proxy_trust_invalid` | `OB_TRUSTED_PROXIES` holds a subnet or range. Use exact addresses. |
 | `rustfs_console_requires_s3` | The console needs the `s3` profile; a filesystem installation cannot enable it without a storage migration. |
 | `storage_migration_required` | `COMPOSE_PROFILES` changed the storage mode of an existing installation. Restore the previous mode; migrating data is a separate procedure. |
