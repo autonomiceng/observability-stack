@@ -622,6 +622,13 @@ def write_derived(env_file: Path, settings: dict[str, str]) -> None:
                + f"OB_GRAFANA_INI_HMAC={revision}\n", 0o600)
 
 
+def sync_shell(settings: dict[str, str]) -> None:
+    """The shell overrides env files in Compose; keep it consistent with the resolved values."""
+    for key in SAVED:
+        if key in os.environ:
+            os.environ[key] = settings[key]
+
+
 def env_files(env_file: Path) -> list[str]:
     """Compose reads the operator's env file, then bootstrap's derived values over it."""
     return ["--env-file", str(env_file), "--env-file", str(derived_env(env_file))]
@@ -754,7 +761,13 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
         fresh = generate(missing)
         # A secret supplied in the shell on a fresh install is the operator's choice;
         # record it instead of generating a different one.
-        fresh.update({k: os.environ[k] for k in missing if os.environ.get(k)})
+        for key in missing:
+            value = os.environ.get(key, "")
+            if value:
+                # The same rule read_env applies when it reads the value back.
+                if unquote(value) != value or any(c in value for c in "$\n\r"):
+                    raise Refused("env_repair_required", f"{key} from the shell must be a literal single-line value")
+                fresh[key] = value
         settings.update(present | fresh)
         # The env file records explicit shell choices and the Compose file selection, so later
         # Compose and Checkpoint commands resolve the same installation. Nothing else is rewritten.
@@ -776,10 +789,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
         if lines != original:
             write_env(env_file, lines)
         write_derived(env_file, settings)
-        # The shell overrides env files in Compose; keep it consistent with the resolved values.
-        for key in SAVED:
-            if key in os.environ:
-                os.environ[key] = settings[key]
+        sync_shell(settings)
         if args.render_only:
             print(json.dumps({"env": str(env_file), "project": project, "generated": sorted(missing)}))
             return 0

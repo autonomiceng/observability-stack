@@ -122,6 +122,13 @@ class BootstrapTests(unittest.TestCase):
         with patch.dict(os.environ, {"OB_GRAFANA_ADMIN_PASSWORD": "operator-choice"}):
             self.assertEqual(self.render(), 0)
         self.assertIn("OB_GRAFANA_ADMIN_PASSWORD=operator-choice\n", self.env.read_text())
+        for value in ("pa$word", "'quoted'", "trailing ", "two\nlines"):
+            self.env.unlink(missing_ok=True)
+            with self.subTest(value=value), patch.dict(os.environ, {"OB_GRAFANA_ADMIN_PASSWORD": value}), \
+                    self.assertRaises(bootstrap.Refused) as refused:
+                self.render()
+            self.assertEqual(refused.exception.code, "env_repair_required")
+            self.assertFalse(self.env.exists())
 
     def test_later_render_refuses_a_conflicting_shell_secret(self):
         self.render()

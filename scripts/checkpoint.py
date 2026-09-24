@@ -103,6 +103,7 @@ class Stack:
         # Resolve as bootstrap does, so a restore into a fresh checkout recreates data/derived.env.
         settings = bootstrap.resolve_settings(lines, ROOT / '.env.example') | secrets
         bootstrap.write_derived(self.env_file, settings)
+        bootstrap.sync_shell(settings)
         self.settings = settings
         self.mode = 's3' if 's3' in settings.get('COMPOSE_PROFILES', '').split(',') else 'filesystem'
         self.backups = (ROOT / settings.get('OB_BACKUP_DIR', './data/backups')).resolve()

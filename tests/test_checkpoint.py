@@ -821,8 +821,10 @@ class RestoreStartTests(unittest.TestCase):
         self.runner = runner
 
     def test_restore_start_publishes_status_v2_after_readiness_on_the_configured_allocation(self):
-        with patch.dict(checkpoint.os.environ, {}, clear=True):
+        with patch.dict(checkpoint.os.environ, {'OB_SCHEME': ''}, clear=True):
             stack = checkpoint.Stack(self.env, runner=self.runner)
+            # Compose prefers the shell over env files, so the shell carries the resolved value.
+            self.assertEqual(checkpoint.os.environ['OB_SCHEME'], 'https')
         derived = self.root / 'data/derived.env'
         self.assertIn('OB_GRAFANA_AUTHORITY=host.tail-example.ts.net:8447\n', derived.read_text())
         self.assertEqual(stack.command[4:8], ['--env-file', str(self.env), '--env-file', str(derived)])
