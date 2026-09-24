@@ -75,7 +75,9 @@ any verifiable immutable reference are refused before fencing or creating a capt
 Helpers use the verified Caddy content ID with pulling disabled; image resolution and
 helpers never pull. A mutable tag alone cannot reproduce a Checkpoint.
 
-Image bytes are kept outside the data Checkpoint. Preserve the recorded references in a
+Image bytes are kept outside the data Checkpoint, and restore only inspects the local
+Docker store: on a recovery host, `docker pull` every captured immutable reference (or load
+the verified archive) before running restore. Preserve the recorded references in a
 retained registry, or retain a protected image archive whose load has been tested on the
 recovery host's Docker store type and platform. A same-host archive roundtrip does not
 qualify a different engine/store type or architecture. After loading, every captured

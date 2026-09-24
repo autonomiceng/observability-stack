@@ -18,8 +18,10 @@ _Avoid_: console, landing page
 optional delivery route.
 _Avoid_: notification, alarm message
 
-**Checkpoint**: one consistent backup set of configuration and persisted telemetry, taken
-with ingestion paused, and the unit of restore and rollback before a persistent change.
+**Checkpoint**: one consistent backup set of the persisted telemetry volumes, the
+repository configuration and the installation marker, taken with ingestion paused, and the
+unit of restore and rollback before a persistent change; the original `.env` secrets and
+the image bytes are kept separately.
 _Avoid_: snapshot, dump
 
 **Stack Gateway**: the Caddy instance that is the only published entry, serving the Stack
@@ -38,7 +40,8 @@ configured, never observed runtime state.
 _Avoid_: status observation, versions file
 
 **Platform Network**: the external Docker network `platform` shared by the stacks on one
-host for ingress and collection, with the fixed allocation `172.30.0.0/24` and Platform
+host for ingress and collection, with the default allocation `172.30.0.0/24`
+(`OB_PLATFORM_SUBNET`, `OB_PLATFORM_IP_RANGE`, the same values in every stack) and Platform
 Edge at `172.30.0.2`.
 _Avoid_: default network, public network
 
