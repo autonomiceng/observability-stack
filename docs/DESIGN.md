@@ -85,8 +85,9 @@ their owning stack's Files API. See `operations/ingress.md`.
 
 Grafana provisions three fixed datasource UIDs (`loki`, `mimir`, `tempo`), the `Stacks` folder,
 one dashboard and thirteen alerts. Anonymous access and user signup are disabled. The admin
-password is generated once. Bootstrap requires a webhook or email/SMTP delivery configuration; an explicit
-placeholder reports degraded readiness. Generated provisioning lives in `OB_STATE_DIR`.
+password is generated once. Without a webhook or email/SMTP delivery configuration, bootstrap
+provisions a placeholder contact point and reports degraded readiness instead of refusing.
+Generated provisioning lives in `OB_STATE_DIR`.
 Metric contracts and absent-source behavior are in `operations/maintenance.md`.
 
 ## Health and verification
@@ -100,16 +101,21 @@ changing its internal hostname or the listener mode. In proxy mode Caddy matches
 full authority, including the port, so other services on the same machine hostname
 stay separate. Platform Edge preserves that authority and supplies trusted HTTPS
 forwarding. Bootstrap derives the authority and hostname consumed by Compose.
-The console's `/links.json` contains configured Grafana and optional sibling URLs, including when
-the root console is opened through an IP or an arbitrary local HTTP hostname.
+The console's `/links.json` contains this stack's Grafana and optional RustFS origins, including when
+the root console is opened through an IP or an arbitrary local HTTP hostname. The console
+shows this stack only; Platform Edge's console owns cross-stack navigation.
 Local readiness verifies both protocols using the installation's public CA certificate in
 memory. Private keys remain in the existing Caddy data volume; no host trust is installed.
 
-Caddy serves exact `/health/{caddy,grafana,loki,tempo,mimir,alloy,rustfs}` routes. Optional sibling probes
-are `/health/gateway` and `/health/backplane`. Caddy's aggregate Docker healthcheck probes
-all five own upstreams. Mimir and Tempo are distroless, so backend readiness is checked over
-HTTP from Caddy rather than by installing another executable in their containers. The smoke
-contract checks each endpoint as well as container state.
+Caddy serves exact `/health/{caddy,grafana,loki,tempo,mimir,alloy,rustfs}` routes and
+`/health/alerts`. Upstream probes return the upstream status with an empty body to every
+caller; `/health/caddy` answers from Caddy itself and `/health/alerts` returns a fixed
+`{"status":"degraded"}` 503 or `{"status":"ready"}` 200.
+Caddy's Docker healthcheck probes only Caddy's own `/health/status`, so one slow backend
+does not mark the gateway unhealthy or fail `up --wait`. Mimir and Tempo are distroless, so
+bootstrap checks each backend's readiness over HTTP through Caddy rather than installing
+another executable in their containers. The smoke contract checks each endpoint as well as
+container state.
 
 Bootstrap writes the Status v2 document to `OB_STATE_DIR/console/status.json` after
 readiness, from `docker compose config` with and without every profile. Caddy serves it at

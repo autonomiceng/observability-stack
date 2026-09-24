@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import bootstrap  # noqa: E402
 
 
+# Settings this stack no longer reads; an older .env or Platform Edge bundle may still carry them.
+RETIRED = tuple("OB_" + key for key in ("ALERTS", "OPERATOR_ALLOW", "GATEWAY_HEALTH_HOST", "GATEWAY_URL", "BACKPLANE_URL"))
 CONTRACT_IPAM = '[{"Subnet":"172.30.0.0/24","IPRange":"172.30.0.128/25","Gateway":"172.30.0.1"}]'
 
 
@@ -55,9 +57,6 @@ class BootstrapTests(unittest.TestCase):
         shutil.copytree(self.template.parent / 'docker', self.root / 'docker')
         for name in ('compose.yaml', 'compose.s3.yaml', 'compose.proxy.yaml'):
             shutil.copy(self.template.parent / name, self.root / name)
-        self.alert_env = patch.dict(os.environ, {'OB_ALERTS': 'placeholder'})
-        self.alert_env.start()
-        self.addCleanup(self.alert_env.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -209,12 +208,11 @@ class BootstrapTests(unittest.TestCase):
         (backups / "20260925T030000000000Z").mkdir()
         (backups / "20260925T030000000000Z" / "manifest.json").write_text(json.dumps({"timestamp": "2026-09-25T03:00:00"}))
         settings = {"OB_PUBLIC_DOMAIN": "observe.test", "COMPOSE_PROFILES": "s3", "OB_RUSTFS_CONSOLE": "true",
-                    "OB_BACKUP_DIR": "./data/backups", "OB_ALERTS": "placeholder",
-                    "OB_GATEWAY_URL": "https://gateway.test"}
+                    "OB_BACKUP_DIR": "./data/backups"}
         bootstrap.access_config(settings)
         doc = bootstrap.status_document(services, services, settings, backups, "2026-09-23T16:00:00Z")
         text = json.dumps(doc)
-        for private in ("private-secret", "sha256", "gateway.test"):
+        for private in ("private-secret", "sha256"):
             self.assertNotIn(private, text)
         self.assertEqual(set(doc), {"contract", "stack", "configuredAt", "components", "features"})
         self.assertEqual((doc["contract"], doc["stack"], doc["configuredAt"]), (2, "observability", "2026-09-23T16:00:00Z"))
@@ -286,6 +284,40 @@ class BootstrapTests(unittest.TestCase):
             bootstrap.write_status(self.root / "data", {"contract": 2, "partial": True})
         self.assertEqual(json.loads(public.read_text()), document)
         self.assertEqual(sorted(p.name for p in console.iterdir()), ["alerts-degraded.json", "links.json", "status.json"])
+
+    def test_fresh_install_without_alert_delivery_starts_degraded(self):
+        def start(extra=""):
+            if extra:
+                self.env.write_text(self.env.read_text() + extra)
+            with patch.object(bootstrap, "__file__", str(self.root / "scripts/bootstrap.py")), \
+                 patch.object(bootstrap, "wait_ready") as ready, \
+                 patch("sys.stdout", new_callable=io.StringIO) as out:
+                runner = runner_with()
+                self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner), 0)
+            self.assertTrue(any(call[:2] == ["docker", "compose"] and "up" in call for call in runner.calls))
+            # Readiness still probes every backend; only alert delivery is degraded.
+            self.assertEqual([call.args[0].rsplit("/", 1)[1] for call in ready.call_args_list][:5],
+                             ["grafana", "loki", "tempo", "mimir", "alloy"])
+            contact = (self.root / "data/grafana-provisioning/alerting/contact-points.yaml").read_text()
+            return json.loads(out.getvalue()), contact, (self.root / "data/console/links.json").read_text()
+
+        self.assertFalse(self.env.exists())
+        first = start()
+        report, contact, _ = first
+        self.assertEqual((report["status"], report["problems"]), ("degraded", ["alert_delivery_placeholder"]))
+        self.assertTrue((self.root / "data/console/alerts-degraded.json").is_file())
+        self.assertIn("configure@example.invalid", contact)
+        # Retired settings, in the file or the shell, neither refuse nor change anything.
+        for value in ("placeholder", "https://sibling.test:8443"):
+            with self.subTest(value=value), patch.dict(os.environ, dict.fromkeys(RETIRED, value)):
+                self.assertEqual(start("".join(f"{key}={value}\n" for key in RETIRED)), first)
+        for partial in ({"OB_ALERT_EMAIL": "ops@observe.test"}, {"OB_SMTP_URL": "smtps://smtp.test:465"}):
+            with self.subTest(partial=partial), self.assertRaises(bootstrap.Refused) as refused:
+                bootstrap.alert_config(partial)
+            self.assertEqual(refused.exception.code, "alert_delivery_invalid")
+        report, _, _ = start("OB_ALERT_WEBHOOK_URL=https://hooks.test/alerts\n")
+        self.assertEqual((report["status"], report["problems"]), ("ready", []))
+        self.assertFalse((self.root / "data/console/alerts-degraded.json").exists())
 
     def test_installation_state_follows_compose_project_name(self):
         found = bootstrap.installation_state(
@@ -532,7 +564,7 @@ class BootstrapTests(unittest.TestCase):
 
     def test_shell_access_settings_survive_restart_without_changing_other_lines(self):
         for mode in ("local", "public", "proxy"):
-            with self.subTest(mode=mode), patch.dict(os.environ, {"OB_ALERTS": "placeholder"}, clear=True):
+            with self.subTest(mode=mode), patch.dict(os.environ, {}, clear=True):
                 self.env.unlink(missing_ok=True)
                 self.render()
                 extra = "# operator comment\nMY_CUSTOM='value with spaces'\nOB_BACKPLANE_OPERATIONS_TOKEN=existing-token\n"
@@ -543,7 +575,6 @@ class BootstrapTests(unittest.TestCase):
                     "OB_GRAFANA_HOST": "dash.example.com", "OB_SCHEME": "https",
                     "OB_BIND_HOST": "0.0.0.0", "OB_HTTP_PORT": "18080", "OB_HTTPS_PORT": "18443",
                     "OB_PUBLIC_PORT_SUFFIX": ":9443", "OB_TRUSTED_PROXIES": "192.0.2.2/32 2001:db8::2/128",
-                    "OB_OPERATOR_ALLOW": "192.0.2.3/32 ::1",
                 }
                 with patch.dict(os.environ, overrides):
                     self.assertEqual(self.render(), 0)
@@ -671,13 +702,11 @@ class BootstrapTests(unittest.TestCase):
         source = self.template.parent
         (self.root / "compose.yaml").write_text((source / "compose.yaml").read_text())
         origin = "https://darkforge.tail694fe2.ts.net:8447"
-        for siblings in (False, True):
+        for _ in range(2):
             _, existing = bootstrap.read_env(self.env)
             retained = "".join(f"{key}={value}\n" for key, value in existing.items())
             self.env.write_text(retained + "OB_ACCESS_MODE=proxy\nOB_TRUSTED_PROXIES=192.0.2.2/32\n"
-                                "OB_GRAFANA_URL=" + origin + "\n" +
-                                ("OB_GATEWAY_URL=https://darkforge.tail694fe2.ts.net:8443\n"
-                                 "OB_BACKPLANE_URL=https://darkforge.tail694fe2.ts.net:8445\n" if siblings else ""))
+                                "OB_GRAFANA_URL=" + origin + "\n")
             with patch.object(bootstrap, "__file__", str(self.root / "scripts/bootstrap.py")), \
                  patch.object(bootstrap, "wait_ready"):
                 self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner_with()), 0)
@@ -686,10 +715,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(settings["OB_GRAFANA_URL"], origin)
             self.assertEqual(settings["OB_GRAFANA_URL_HOST"], "darkforge.tail694fe2.ts.net")
             self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "darkforge.tail694fe2.ts.net:8447")
-            expected = {"grafana": origin}
-            if siblings:
-                expected.update(gateway=settings["OB_GATEWAY_URL"], backplane=settings["OB_BACKPLANE_URL"])
-            self.assertEqual(json.loads((self.root / "data/console/links.json").read_text()), expected)
+            self.assertEqual(json.loads((self.root / "data/console/links.json").read_text()), {"grafana": origin})
             self.assertEqual(settings["OB_TRUSTED_PROXIES"], "192.0.2.2/32")
 
     def test_rustfs_console_off_on_s3_and_filesystem_refusal(self):
@@ -838,13 +864,11 @@ class BootstrapTests(unittest.TestCase):
 
 
 class ConsoleAccessTests(unittest.TestCase):
-    def test_console_allowlist_is_independent_of_monitoring_operators(self):
-        settings = {'COMPOSE_PROFILES': 's3', 'OB_RUSTFS_CONSOLE': 'true',
-                    'OB_OPERATOR_ALLOW': '192.0.2.7/32', 'OB_RUSTFS_CONSOLE_ALLOW': '100.64.0.9/32'}
+    def test_console_allowlist_default_and_invalid_values(self):
+        settings = {'COMPOSE_PROFILES': 's3', 'OB_RUSTFS_CONSOLE': 'true', 'OB_RUSTFS_CONSOLE_ALLOW': '100.64.0.9/32'}
         bootstrap.access_config(settings)
-        self.assertEqual(settings['OB_OPERATOR_ALLOW'], '192.0.2.7/32')
         self.assertEqual(settings['OB_RUSTFS_CONSOLE_ALLOW'], '100.64.0.9/32')
-        default = {'OB_OPERATOR_ALLOW': '192.0.2.7/32'}
+        default = {}
         bootstrap.access_config(default)
         self.assertEqual(default['OB_RUSTFS_CONSOLE_ALLOW'], '127.0.0.1/8 ::1')
         for value in ('', 'private_ranges', 'example.com', '127.0.0.1 {', '192.0.2.1/33',

@@ -29,16 +29,13 @@ services:
       OB_RUSTFS_AUTHORITY: ${OB_RUSTFS_AUTHORITY:-}
       OB_PUBLIC_PORT_SUFFIX: ${OB_PUBLIC_PORT_SUFFIX:-}
       OB_RUSTFS_CONSOLE_ALLOW: ${OB_RUSTFS_CONSOLE_ALLOW:-127.0.0.1/8 ::1}
-      OB_OPERATOR_ALLOW: ${OB_OPERATOR_ALLOW:-127.0.0.1/8 ::1}
       OB_TRUSTED_PROXIES: ${OB_TRUSTED_PROXIES:-172.30.0.2/32}
-      OB_GATEWAY_HEALTH_HOST: ${OB_GATEWAY_HEALTH_HOST:-localhost}
       # Status v2: health paths of components outside the selected profiles answer 404.
       OB_COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./docker/caddy/console:/srv/console:ro
       - ${OB_STATE_DIR:-./data}/console:/srv/state:ro
-      - ./docker/caddy/health.sh:/etc/caddy/health.sh:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
@@ -52,9 +49,11 @@ services:
         condition: service_started
       mimir:
         condition: service_started
-    # Tempo and Mimir are distroless. Probe their HTTP readiness here.
+    # Caddy only: one slow backend must not mark the gateway unhealthy. Bootstrap probes
+    # each backend over /health/<service>. Public mode serves probes on the root host only,
+    # and an unmatched host still answers an empty 200, so require the route's body.
     healthcheck:
-      test: ["CMD", "sh", "/etc/caddy/health.sh"]
+      test: ["CMD-SHELL", "wget -q -T 5 -O - --header \"Host: $$OB_PUBLIC_DOMAIN\" http://127.0.0.1/health/status | grep -qx ok"]
       interval: 10s
       timeout: 10s
       retries: 30

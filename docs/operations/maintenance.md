@@ -38,15 +38,17 @@ same pinned image as the gateway but has its own credentials, buckets and volume
 
 Grafana evaluates the rules in `Stacks / stack-health` every minute. No-data remains visible
 as `NoData`, and query failures as `Error`. An absent source cannot prove the threshold safe.
-Bootstrap requires `OB_ALERT_WEBHOOK_URL`, or `OB_ALERT_EMAIL` plus `OB_SMTP_URL`.
-It renders `OB_STATE_DIR/grafana-provisioning` and the SMTP configuration before starting
+Delivery uses `OB_ALERT_WEBHOOK_URL`, or `OB_ALERT_EMAIL` plus `OB_SMTP_URL`.
+Bootstrap renders `OB_STATE_DIR/grafana-provisioning` and the SMTP configuration before starting
 Grafana. `OB_STATE_DIR` is made private (mode 0700) because the generated SMTP
 configuration may contain credentials. Re-run bootstrap after changing delivery settings. SMTP URLs use
 `smtp://user:password@host:587` (required STARTTLS) or `smtps://user:password@host:465`;
 percent-encode reserved characters in credentials. The email address is also the sender.
-An unauthenticated relay can omit credentials. For a disposable or intentionally undelivered
-installation, explicitly set `OB_ALERTS=placeholder`. Bootstrap then reports `degraded`
-with `alert_delivery_placeholder`, and `/health/alerts` returns 503 until configured.
+An unauthenticated relay can omit credentials. Bootstrap refuses an email address without
+an SMTP URL, or the reverse, with `alert_delivery_invalid`. With neither configured, bootstrap still
+starts the stack with a placeholder contact point that delivers nothing, reports `degraded`
+with `alert_delivery_placeholder`, and `/health/alerts` returns 503, which the Stack Console
+shows as a degraded Alert delivery badge. Configure delivery and rerun bootstrap to clear it.
 Test delivery from Grafana after provisioning.
 
 | Alert | Source and condition |
@@ -139,7 +141,8 @@ Rerun bootstrap after changing images, origins, profiles or alert delivery. The 
 never contains secrets, digests, container names or host paths. A Checkpoint restore does
 not rewrite it.
 
-Liveness comes from `/health/<component>`, status only for clients outside `OB_OPERATOR_ALLOW`:
+Liveness comes from `/health/<component>`. Every caller receives the upstream status code with
+an empty body; no client address unlocks upstream health details:
 
 | Component | Probe |
 | --- | --- |

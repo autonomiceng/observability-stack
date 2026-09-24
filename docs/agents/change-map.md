@@ -6,8 +6,8 @@ migration; preserve external volumes and service names.
 
 For Alloy or Grafana provisioning changes, verify exporter aliases, authentication,
 datasources and alert provisioning through the existing smoke contract. Distroless
-backends are covered by aggregate health probes rather than individual Docker
-health fields.
+backends have no Docker health field; bootstrap and smoke probe each one over
+`/health/<service>`, and Caddy's own healthcheck covers Caddy only.
 
 For bootstrap or environment changes, preserve present secrets and unmanaged lines.
 Unit tests use a fake runner and never call Docker. Run the restore drill separately with `SMOKE_PROFILE=filesystem` and `SMOKE_PROFILE=s3`.

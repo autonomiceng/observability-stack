@@ -11,15 +11,15 @@ done
 for tool in docker python3 shellcheck; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
-shellcheck scripts/*.sh docker/caddy/*.sh
+shellcheck scripts/*.sh
 echo 'shellcheck: PASS'
 python3 -m py_compile scripts/*.py tests/*.py
 echo 'python: PASS'
 docker compose version >/dev/null
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
-OB_ALERTS=placeholder python3 scripts/bootstrap.py --env-file "$work/.env" --render-only >/dev/null
-OB_ALERTS=placeholder OB_ACCESS_MODE=proxy \
+python3 scripts/bootstrap.py --env-file "$work/.env" --render-only >/dev/null
+OB_ACCESS_MODE=proxy \
   OB_GRAFANA_URL=https://darkforge.tail694fe2.ts.net:8447 \
   OB_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8451 \
   python3 scripts/bootstrap.py --env-file "$work/url.env" --render-only >/dev/null
@@ -62,6 +62,9 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
     assert services['caddy']['environment']['OB_GRAFANA_AUTHORITY'] == (
         'darkforge.tail694fe2.ts.net:8447' if explicit_url else '')
     assert services['caddy']['environment']['OB_TRUSTED_PROXIES'] == '172.30.0.2/32', 'Edge trust default'
+    probe = ' '.join(services['caddy']['healthcheck']['test'])
+    assert 'http://127.0.0.1/health/status | grep -qx ok' in probe and '$OB_PUBLIC_DOMAIN' in probe, probe
+    assert not any(upstream in probe for upstream in ('grafana', 'loki', 'tempo', 'mimir', 'alloy')), 'Caddy health probes Caddy only'
     assert services['alloy']['environment']['OB_SCRAPE_EDGE'] == 'false'
     assert services['alloy']['environment']['OB_SCRAPE_GATEWAY'] == 'false'
     assert services['alloy']['environment']['OB_SCRAPE_BACKPLANE'] == 'false'
@@ -162,7 +165,7 @@ for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'pr
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \
     -e "OB_ACCESS_MODE=$1" -e "OB_PUBLIC_DOMAIN=$2" -e OB_GRAFANA_HOST=grafana.example.com \
     -e OB_TRUSTED_PROXIES=172.30.0.2/32 -e OB_RUSTFS_HOST=rustfs.example.com \
-    -e "OB_OPERATOR_ALLOW=192.0.2.9/32" -e "OB_RUSTFS_CONSOLE_ALLOW=100.100.1.2/32" \
+    -e "OB_RUSTFS_CONSOLE_ALLOW=100.100.1.2/32" \
     -e "OB_RUSTFS_CONSOLE=$enabled" -e "OB_RUSTFS_URL_HOST=$url_host" -e "OB_RUSTFS_AUTHORITY=$rustfs_authority" \
     -e "OB_GRAFANA_URL_HOST=$url_host" -e "OB_GRAFANA_AUTHORITY=$authority" \
     -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" "$caddy_image" \
@@ -225,18 +228,27 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
                 protected += 1
     assert protected == len(rustfs_proxies), f'{path}: RustFS proxy outside the gated route'
     assert '/versions.json' not in encoded, f'{path}: Status v2 replaced /versions.json'
-    operator_paths = ('/health/grafana', '/health/loki', '/health/tempo', '/health/mimir',
-                      '/health/alloy', '/health/rustfs', '/health/gateway', '/health/backplane',
-                      '/health/alerts')
-    for operator_path in operator_paths:
+    # The only client IP gate is the RustFS console allowlist; health has no operator tier.
+    ranges = [item['client_ip']['ranges'] for item in objects(config) if 'client_ip' in item]
+    assert all(value == ['100.100.1.2/32'] for value in ranges), f'{path}: unexpected client_ip gate {ranges}'
+    for health_path in ('/health/grafana', '/health/loki', '/health/tempo', '/health/mimir',
+                        '/health/alloy', '/health/rustfs', '/health/alerts'):
         matched_routes = [item for item in objects(config) if any(
-            isinstance(match, dict) and operator_path in match.get('path', [])
+            isinstance(match, dict) and health_path in match.get('path', [])
             for match in item.get('match', []))]
-        assert matched_routes, f'{path}: missing {operator_path} operator route'
+        assert matched_routes, f'{path}: missing {health_path} route'
         for route in matched_routes:
-            ranges = [item['client_ip']['ranges'] for item in objects(route) if 'client_ip' in item]
-            assert ['192.0.2.9/32'] in ranges, f'{path}: {operator_path} lacks monitoring operator allowlist'
-            assert ['100.100.1.2/32'] not in ranges, f'{path}: {operator_path} uses RustFS console allowlist'
+            proxies = [item for item in objects(route) if item.get('handler') == 'reverse_proxy']
+            assert bool(proxies) == (health_path != '/health/alerts'), f'{path}: {health_path} upstream'
+            for proxy in proxies:
+                # Every upstream answer is replaced by an empty body with the upstream status.
+                replies = [item for item in objects(proxy.get('handle_response', []))
+                           if item.get('handler')]
+                assert replies and all(item['handler'] == 'static_response' and not item.get('body')
+                                       for item in replies), f'{path}: {health_path} leaks upstream bodies'
+            assert 'problem' not in json.dumps(route), f'{path}: {health_path} exposes diagnostics'
+    for removed in ('/health/gateway', '/health/backplane', 'lg-gateway', 'bp-server'):
+        assert removed not in encoded, f'{path}: sibling health route {removed} remains'
     if path.name.startswith('caddy-proxy-darkforge.tail694fe2.ts.net-'):
         assert 'darkforge.tail694fe2.ts.net:8447' in encoded
         assert 'darkforge.tail694fe2.ts.net:8451' in encoded
@@ -260,7 +272,7 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
         assert logger['encoder']['wrap']['format'] == 'json'
         assert logger['encoder']['fields']['request>headers']['filter'] == 'delete'
 PY
-echo 'Caddyfile (3 access modes, trusted proxy, RustFS off/on): PASS'
+echo 'Caddyfile (3 access modes, trusted proxy, RustFS off/on, status-only health): PASS'
 for enabled in true false; do
 for token in '' validation-only; do
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \

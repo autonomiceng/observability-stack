@@ -69,19 +69,12 @@
 	}
 }
 
+# Upstream health bodies can disclose versions and internals; every caller gets the status only.
 (health) {
-	@operator client_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
-	handle @operator {
-		reverse_proxy {args[0]} {
-			header_up Host {args[1]}
-		}
-	}
-	handle {
-		reverse_proxy {args[0]} {
-			header_up Host {args[1]}
-			handle_response {
-				respond "" {rp.status_code}
-			}
+	reverse_proxy {args[0]} {
+		header_up Host {args[1]}
+		handle_response {
+			respond "" {rp.status_code}
 		}
 	}
 }
@@ -152,23 +145,10 @@
 			import health rustfs:9000 rustfs:9000
 		}
 	}
-	handle /health/gateway {
-		rewrite * /health/litellm
-		import health lg-gateway:80 {$OB_GATEWAY_HEALTH_HOST:localhost}
-	}
-	handle /health/backplane {
-		rewrite * /health/ready
-		import health bp-server:3000 bp-server:3000
-	}
 	handle /health/alerts {
 		root * /srv/state
-		@operatorPlaceholder {
-			client_ip {$OB_OPERATOR_ALLOW:127.0.0.1/8 ::1}
-			file /alerts-degraded.json
-		}
 		@placeholder file /alerts-degraded.json
 		header Content-Type application/json
-		respond @operatorPlaceholder `{"status":"degraded","problem":"alert_delivery_placeholder"}` 503
 		respond @placeholder `{"status":"degraded"}` 503
 		respond `{"status":"ready"}` 200
 	}

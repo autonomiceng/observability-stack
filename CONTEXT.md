@@ -30,8 +30,8 @@ The single published entry that serves the Stack Console and routes application 
 _Avoid_: Collector, mesh
 
 **Stack Console**:
-The unauthenticated page with application links, readiness and the configured versions
-from the Status Document.
+The unauthenticated page with this stack's application links, readiness, alert delivery state
+and the configured versions from the Status Document. It links no sibling stacks.
 _Avoid_: Dashboard, admin UI
 
 **Status Document**:
