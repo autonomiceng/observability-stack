@@ -66,9 +66,10 @@ prometheus.scrape "edge" {
   forward_to = [prometheus.remote_write.local.receiver]
 }
 
+// LiteLLM is reached through the gateway listener, which admits only LG_CHECKPOINT_ALLOW sources.
 discovery.relabel "gateway" {
   targets = [{
-    "__address__" = "lg-litellm:4000",
+    "__address__" = "lg-gateway:8081",
     "__enabled" = sys.env("OB_SCRAPE_GATEWAY"),
   }]
   rule {
@@ -81,6 +82,7 @@ discovery.relabel "gateway" {
 prometheus.scrape "gateway" {
   targets = discovery.relabel.gateway.output
   job_name = "llm-gateway"
+  metrics_path = "/metrics/litellm"
   scrape_interval = "15s"
   forward_to = [prometheus.remote_write.local.receiver]
 }

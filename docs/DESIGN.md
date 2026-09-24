@@ -11,8 +11,8 @@ Browser -> Caddy (:80/:443 on OB_BIND_HOST) -> Grafana
               + readiness probes             + Loki / Mimir / Tempo
 
 Docker socket -> Alloy -> Loki (logs, 30d)
-lg-litellm:4000/metrics --+
-bp-server:3000/metrics --+-> Alloy -> Mimir (metrics, 30d)
+lg-gateway:8081/metrics/litellm  --+
+bp-server:3000/metrics           --+-> Alloy -> Mimir (metrics, 30d)
 Alloy self / cAdvisor / textfile --+
 OTLP producer -> Alloy :4317/:4318 -> Tempo (traces, 7d)
 ```
@@ -35,8 +35,9 @@ Platform Edge containers are discovered by the same Docker API pipeline; URLs re
 fields and are never promoted to Loki labels. See `operations/logging.md` for the runtime
 logging audit, host prerequisites and evidence checks.
 
-Alloy scrapes LiteLLM, gateway Valkey/Postgres exporters and gateway Checkpoint metrics
-when enabled (`OB_SCRAPE_GATEWAY=true`, default false). A hidden-label relabel rule removes
+Alloy scrapes LiteLLM through the gateway listener at `lg-gateway:8081/metrics/litellm`,
+gateway Valkey/Postgres exporters and gateway Checkpoint metrics when enabled
+(`OB_SCRAPE_GATEWAY=true`, default false). A hidden-label relabel rule removes
 disabled targets. Another
 relabel rule removes the backplane target unless `OB_SCRAPE_BACKPLANE=true`; the scrape
 authenticates with `OB_BACKPLANE_OPERATIONS_TOKEN`, which never becomes a target label. Enabled but missing stacks produce failed scrapes; disabled targets are absent, while Collector readiness stays independent of scrape success. Mimir receives

@@ -113,6 +113,18 @@ uses = [line.strip() for line in Path('config.alloy').read_text().splitlines() i
 assert uses == ['bearer_token = sys.env("OB_BACKPLANE_OPERATIONS_TOKEN")'], uses
 PY
 echo 'backplane token confined to Alloy environment and bearer_token: PASS'
+python3 - <<'PY'
+import re
+from pathlib import Path
+config = Path('config.alloy').read_text()
+# LiteLLM leaves the Platform Network; only the gateway listener reaches it.
+assert 'lg-litellm' not in config, 'scrape LiteLLM through lg-gateway:8081'
+relabel = re.search(r'discovery\.relabel "gateway" \{.*?\n\}', config, re.S).group()
+scrape = re.search(r'prometheus\.scrape "gateway" \{.*?\n\}', config, re.S).group()
+assert '"__address__" = "lg-gateway:8081"' in relabel, relabel
+assert 'job_name = "llm-gateway"' in scrape and 'metrics_path = "/metrics/litellm"' in scrape, scrape
+PY
+echo 'LiteLLM scraped at lg-gateway:8081/metrics/litellm: PASS'
 python3 - "$work" <<'PY'
 import json, subprocess, sys
 from pathlib import Path
