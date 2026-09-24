@@ -100,9 +100,9 @@ hostname. For example, set these values in this stack's existing `.env`:
 
 ```sh
 OB_ACCESS_MODE=proxy
-OB_PUBLIC_DOMAIN=darkforge.tail694fe2.ts.net
+OB_PUBLIC_DOMAIN=host.tail-example.ts.net
 OB_GRAFANA_HOST=grafana.localhost
-OB_GRAFANA_URL=https://darkforge.tail694fe2.ts.net:8447
+OB_GRAFANA_URL=https://host.tail-example.ts.net:8447
 OB_SCHEME=https
 OB_PUBLIC_PORT_SUFFIX=:8446
 OB_BIND_HOST=127.0.0.1
@@ -113,11 +113,12 @@ OB_TRUSTED_PROXIES=172.30.0.2/32
 Port 18180 is the stack's loopback HTTP port behind Edge. In this example port 8446 serves the Stack
 Console and port 8447 serves Grafana. Edge owns the HTTPS listeners and certificates.
 Keep the existing secrets, state directory, volume prefix and storage profile.
-Run bootstrap again after changing the settings. It records `OB_GRAFANA_URL_HOST`
-and `OB_GRAFANA_AUTHORITY` for Compose; these are derived values, not operator settings.
+Run bootstrap again after changing the settings. It writes `OB_GRAFANA_URL_HOST`
+and `OB_GRAFANA_AUTHORITY` to `data/derived.env` for Compose; these are derived values,
+not operator settings.
 
 Configure Edge's Grafana listener to forward to `ob-gateway:80`, preserve
-`Host: darkforge.tail694fe2.ts.net:8447`, and overwrite `X-Forwarded-Proto` with
+`Host: host.tail-example.ts.net:8447`, and overwrite `X-Forwarded-Proto` with
 `https`. Edge must also supply the connecting client's address correctly. The stack
 accepts forwarded information only from its configured exact peers.
 
@@ -154,19 +155,19 @@ origins and configure:
 ```sh
 OB_RUSTFS_CONSOLE=true
 OB_RUSTFS_HOST=rustfs.localhost
-OB_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8451
+OB_RUSTFS_URL=https://host.tail-example.ts.net:8451
 ```
 
 Use the proxy settings above. `OB_RUSTFS_URL` follows the same strict origin rules as
-`OB_GRAFANA_URL`; bootstrap saves `OB_RUSTFS_URL_HOST` and `OB_RUSTFS_AUTHORITY` as derived
-values. Grafana on `:8447`, the Stack Console on `:8446`, and RustFS on `:8451` can share
+`OB_GRAFANA_URL`; bootstrap writes `OB_RUSTFS_URL_HOST` and `OB_RUSTFS_AUTHORITY` to
+`data/derived.env` as derived values. Grafana on `:8447`, the Stack Console on `:8446`, and RustFS on `:8451` can share
 one hostname. Authorities must be distinct. Internal application hostnames stay separate
 from the shared external hostname; bootstrap rejects cross-application hostname reuse,
 even when the console is disabled. The URL configures routing and links; Edge owns the
 external listener and certificate.
 
 Platform Edge's follow-up reserves private HTTPS port 8451 and forwards its **whole
-origin** to `ob-gateway:80`, retaining `Host: darkforge.tail694fe2.ts.net:8451` and supplying
+origin** to `ob-gateway:80`, retaining `Host: host.tail-example.ts.net:8451` and supplying
 `X-Forwarded-Proto: https`. Edge must correctly overwrite or append the connecting client
 address. Caddy forwards all paths unchanged to `rustfs:9001`, including
 `/rustfs/console/`, its assets, `/rustfs/admin/v3/*`, STS and S3 requests. Rewriting Host,
@@ -181,7 +182,7 @@ restrictions at that edge before allowing the peer. Never trust the whole Tailne
 Docker subnet as forwarding proxies. Untrusted forwarding headers cannot grant access.
 RustFS still stays off the Platform Network; Caddy is its only ingress.
 
-Humans log in using the existing privileged RustFS root credentials: `OB_S3_ACCESS_KEY`
+Humans log in using the existing RustFS root credentials: `OB_S3_ACCESS_KEY`
 and `OB_S3_SECRET_KEY` in the private `.env`. These are administrative credentials, not an
 agent's scoped S3 key. Native RustFS authentication remains required for admin and object
 operations. The Stack Console publishes only the configured link. Agents use the Files

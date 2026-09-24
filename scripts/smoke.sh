@@ -68,8 +68,8 @@ rustfs_url=
 case "$access_mode" in
   local) ;;
   proxy)
-    grafana_url=https://darkforge.tail694fe2.ts.net:8447
-    rustfs_url=https://darkforge.tail694fe2.ts.net:8451
+    grafana_url=https://host.tail-example.ts.net:8447
+    rustfs_url=https://host.tail-example.ts.net:8451
     ;;
   *) echo 'SMOKE_ACCESS_MODE must be local or proxy' >&2; exit 2 ;;
 esac

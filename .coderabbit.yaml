@@ -8,5 +8,4 @@ reviews:
     auto_pause_after_reviewed_commits: 0
     drafts: true
     base_branches:
-      - "^oss-main$"
       - "^main$"

@@ -785,6 +785,59 @@ finally:
         self.assertFalse((self.stack.state / 'textfile/checkpoint.prom').exists())
 
 
+class RestoreStartTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / 'backups').mkdir()
+        self.env = self.root / '.env'
+        self.env.write_text('OB_GRAFANA_ADMIN_PASSWORD=admin-secret\nOB_S3_ACCESS_KEY=access\nOB_S3_SECRET_KEY=secret\n'
+                            f'OB_STATE_DIR={self.root}/data\nOB_BACKUP_DIR={self.root}/backups\n'
+                            'OB_PLATFORM_SUBNET=10.40.0.0/24\nOB_PLATFORM_IP_RANGE=10.40.0.128/25\n'
+                            'OB_ACCESS_MODE=proxy\nOB_GRAFANA_URL=https://host.tail-example.ts.net:8447\n')
+        self.calls = []
+        refs = checkpoint.bootstrap.images(checkpoint.ROOT / 'compose.yaml')
+
+        def runner(argv):
+            self.calls.append(argv)
+            if argv[:2] == ['docker', 'compose'] and argv[-3:] == ['config', '--format', 'json']:
+                every = '*' in argv
+                return subprocess.CompletedProcess(argv, 0, json.dumps({'name': 'restore-test', 'services': {
+                    name: {'image': ref} for name, ref in refs.items() if every or name not in ('rustfs', 'rustfs-init')}}), '')
+            if argv[:3] == ['docker', 'network', 'inspect']:
+                return subprocess.CompletedProcess(argv, 1, '', '')
+            return subprocess.CompletedProcess(argv, 0, '', '')
+        self.runner = runner
+
+    def test_restore_start_publishes_status_v2_after_readiness_on_the_configured_allocation(self):
+        with patch.dict(checkpoint.os.environ, {}, clear=True):
+            stack = checkpoint.Stack(self.env, runner=self.runner)
+        derived = self.root / 'data/derived.env'
+        self.assertIn('OB_GRAFANA_AUTHORITY=host.tail-example.ts.net:8447\n', derived.read_text())
+        self.assertEqual(stack.command[4:8], ['--env-file', str(self.env), '--env-file', str(derived)])
+        status = self.root / 'data/console/status.json'
+        stack.wait_ready = Mock(side_effect=lambda: self.assertFalse(status.exists(), 'status before readiness'))
+        stack.start()
+        stack.wait_ready.assert_called_once_with()
+        document = json.loads(status.read_text())
+        self.assertEqual((document['contract'], document['stack']), (2, 'observability'))
+        self.assertEqual({c['id']: c['enabled'] for c in document['components']},
+                         {name: name != 'rustfs' for name, *_ in checkpoint.bootstrap.COMPONENTS})
+        self.assertEqual(document['components'][1]['url'], 'https://host.tail-example.ts.net:8447')
+        self.assertFalse((self.root / 'data/console/versions.json').exists())
+        self.assertNotIn('admin-secret', status.read_text())
+        self.assertIn(['docker', 'network', 'create', '--driver', 'bridge', '--subnet', '10.40.0.0/24',
+                       '--ip-range', '10.40.0.128/25', '--gateway', '10.40.0.1', 'platform'], self.calls)
+        # Restore validates the same allocation before it writes any volume.
+        stack.check_empty = Mock()
+        with patch.object(checkpoint, 'verify_checkpoint'), \
+                patch.object(checkpoint.bootstrap, 'ensure_network', side_effect=RuntimeError('stop')) as network, \
+                self.assertRaisesRegex(RuntimeError, 'stop'):
+            checkpoint.restore(stack, self.root / 'backups')
+        network.assert_called_once_with(stack.runner, 'platform', '10.40.0.0/24', '10.40.0.128/25')
+
+
 class CheckpointVerificationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

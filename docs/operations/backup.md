@@ -162,8 +162,8 @@ verify names with `docker volume ls` before proceeding.
 2. Select a fresh `COMPOSE_PROJECT_NAME` and `OB_VOLUME_PREFIX`, isolated `OB_PLATFORM_NETWORK`, free ports and
    an empty `OB_STATE_DIR`. An isolated network needs a subnet disjoint from the installed
    Platform Network: set `OB_PLATFORM_SUBNET` and `OB_PLATFORM_IP_RANGE` (for example both
-   `172.31.0.0/24`) in the env file and export the same values in the shell, because restore
-   takes the network allocation from the shell and otherwise uses the contract default. Preserve the original secret values and storage profile.
+   `172.31.0.0/24`) in the env file; restore creates or validates the network with that
+   allocation. Preserve the original secret values and storage profile.
    Update `OB_PUBLIC_PORT_SUFFIX` for the recovery endpoint. Provide an existing mounted
    `OB_BACKUP_DIR`; it may point to the source repository.
 3. Run `scripts/restore.sh <Checkpoint> --env-file <original-env>`. Restore verifies the
@@ -174,8 +174,9 @@ verify names with `docker volume ls` before proceeding.
    with relative paths and no `..` components; links and special files are rejected during
    both capture and restore. Alert delivery settings and shared-network availability are
    checked before extracting archives or writing the installation marker.
-4. It restores every data volume and the marker before starting any service. It boots with
-   Compose health checks and probes all five HTTP endpoints.
+4. It restores every data volume and the marker before starting any service. It rewrites
+   `data/derived.env` beside the env file, boots with Compose health checks, probes all five
+   HTTP endpoints, then publishes the Status Document.
    Verify historical queries and Grafana login before routing producers to the new stack.
 
 Manifest v2 records active services and their immutable references. Restore resolves the supplied
@@ -207,7 +208,8 @@ printf '%s\n' filesystem > /path/to/state/installation/storage-mode
 
 Use `s3` only if the existing data was written in S3 mode. This records known history;
 it does not migrate data. Scratch `--render-only --env-file /tmp/...` remains an offline
-env rendering operation and never starts or creates installation state.
+env rendering operation: it writes only that env file and `data/derived.env` beside it, and
+never starts or creates installation state.
 
 ## RPO, RTO and scheduling
 
@@ -231,8 +233,8 @@ per job. Require both `Recovery contract` jobs in release/branch protection alon
 A workflow alone does not configure required status checks in repository settings.
 
 It refuses existing disposable resources, makes a temporary checkout copy, and boots an
-isolated project. Only this copy disables Docker log discovery, cAdvisor and host filesystem
-collection, removes the Collector's host mounts and drops privileged mode. Log markers are
+isolated project. Only this copy disables Docker log discovery and host filesystem
+collection and removes the Collector's Docker socket and host root mounts. Log markers are
 injected directly into Loki; a temporary textfile metric and one OTLP trace exercise Alloy.
 The production Smoke Contract still requires Docker log ingestion and host filesystem metrics.
 Other host collectors may observe the drill's containers or resource usage, so use a dedicated

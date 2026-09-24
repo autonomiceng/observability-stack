@@ -19,32 +19,58 @@ docker compose version >/dev/null
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 python3 scripts/bootstrap.py --env-file "$work/.env" --render-only >/dev/null
+mkdir "$work/url"
 OB_ACCESS_MODE=proxy \
-  OB_GRAFANA_URL=https://darkforge.tail694fe2.ts.net:8447 \
-  OB_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8451 \
-  python3 scripts/bootstrap.py --env-file "$work/url.env" --render-only >/dev/null
+  OB_GRAFANA_URL=https://host.tail-example.ts.net:8447 \
+  OB_RUSTFS_URL=https://host.tail-example.ts.net:8451 \
+  python3 scripts/bootstrap.py --env-file "$work/url/.env" --render-only >/dev/null
 echo 'env render: PASS'
+# The documented two-file form: the operator's env file, then bootstrap's derived values.
+compose() {
+  dir=$1
+  shift
+  docker compose --env-file "$dir/.env" --env-file "$dir/data/derived.env" "$@"
+}
 for mode in filesystem s3 proxy proxy-s3 proxy-url proxy-url-s3; do
   if [ "$mode" = proxy-url-s3 ]; then
-    OB_RUSTFS_CONSOLE=true docker compose --env-file "$work/url.env" -f compose.yaml -f compose.s3.yaml -f compose.proxy.yaml --profile s3 config --format json > "$work/$mode.json"
+    OB_RUSTFS_CONSOLE=true compose "$work/url" -f compose.yaml -f compose.s3.yaml -f compose.proxy.yaml --profile s3 config --format json > "$work/$mode.json"
   elif [ "$mode" = proxy-url ]; then
-    docker compose --env-file "$work/url.env" -f compose.yaml -f compose.proxy.yaml config --format json > "$work/$mode.json"
+    compose "$work/url" -f compose.yaml -f compose.proxy.yaml config --format json > "$work/$mode.json"
   elif [ "$mode" = proxy-s3 ]; then
-    docker compose --env-file "$work/.env" -f compose.yaml -f compose.s3.yaml -f compose.proxy.yaml --profile s3 config --format json > "$work/$mode.json"
+    compose "$work" -f compose.yaml -f compose.s3.yaml -f compose.proxy.yaml --profile s3 config --format json > "$work/$mode.json"
   elif [ "$mode" = proxy ]; then
-    docker compose --env-file "$work/.env" -f compose.yaml -f compose.proxy.yaml config --format json > "$work/$mode.json"
+    compose "$work" -f compose.yaml -f compose.proxy.yaml config --format json > "$work/$mode.json"
   elif [ "$mode" = s3 ]; then
-    docker compose --env-file "$work/.env" -f compose.yaml -f compose.s3.yaml --profile s3 config --format json > "$work/$mode.json"
+    compose "$work" -f compose.yaml -f compose.s3.yaml --profile s3 config --format json > "$work/$mode.json"
   else
-    docker compose --env-file "$work/.env" -f compose.yaml config --format json > "$work/$mode.json"
+    compose "$work" -f compose.yaml config --format json > "$work/$mode.json"
   fi
 done
 python3 - "$work" <<'PY'
 import json, re, sys
 from pathlib import Path
+sys.path.insert(0, 'scripts')
+import bootstrap
+# Grafana receives its admin password only as a file secret.
+admin = [bootstrap.read_env(Path(sys.argv[1]) / env)[1]['OB_GRAFANA_ADMIN_PASSWORD'] for env in ('.env', 'url/.env')]
 for path in sorted(Path(sys.argv[1]).glob('*.json')):
     config = json.loads(path.read_text())
     services = config['services']
+    assert not any(value in path.read_text() for value in admin), f'{path}: Grafana admin password rendered'
+    # Exact keys: no elevated mode, added capabilities or devices on the Collector.
+    assert set(services['alloy']) == {'command', 'environment', 'healthcheck', 'image', 'logging', 'mem_limit',
+                                      'mem_reservation', 'networks', 'pids_limit', 'restart', 'user', 'volumes'}, sorted(services['alloy'])
+    assert {volume['target'] for volume in services['alloy']['volumes']} == {
+        '/etc/alloy/config.alloy', '/var/lib/alloy', '/var/run/docker.sock', '/rootfs', '/var/lib/alloy/textfile'}, 'Alloy mounts'
+    caddy = services['caddy']
+    assert (caddy['cap_drop'], caddy['cap_add'], caddy['read_only'], caddy['security_opt'], caddy['tmpfs']) == (
+        ['ALL'], ['NET_BIND_SERVICE'], True, ['no-new-privileges:true'], ['/tmp']), 'Caddy hardening'
+    grafana = services['grafana']
+    assert grafana['environment']['GF_SECURITY_ADMIN_PASSWORD__FILE'] == '/run/secrets/grafana-admin'
+    assert not {'GF_SECURITY_ADMIN_PASSWORD', 'OB_SMTP_URL'} & set(grafana['environment']), 'Grafana secrets in env'
+    assert [(item['source'], item['target']) for item in grafana['secrets']] == [
+        ('grafana-admin', '/run/secrets/grafana-admin'), ('grafana-ini', '/etc/grafana/grafana.ini')]
+    assert re.fullmatch(r'[0-9a-f]{64}', grafana['environment']['OB_GRAFANA_INI_HMAC']), 'derived.env loaded'
     published = {name for name, svc in services.items() if svc.get('ports')}
     assert published == {'caddy'}, f'only caddy publishes ports: {published}'
     shared = {name for name, svc in services.items() if 'platform' in svc.get('networks', {})}
@@ -56,11 +82,11 @@ for path in sorted(Path(sys.argv[1]).glob('*.json')):
     assert services['grafana']['environment']['GF_LOG_MODE'] == 'console'
     explicit_url = path.stem.startswith('proxy-url')
     assert services['grafana']['environment']['GF_SERVER_ROOT_URL'] == (
-        'https://darkforge.tail694fe2.ts.net:8447/' if explicit_url else 'http://grafana.localhost/')
+        'https://host.tail-example.ts.net:8447/' if explicit_url else 'http://grafana.localhost/')
     assert services['grafana']['environment']['GF_SERVER_DOMAIN'] == (
-        'darkforge.tail694fe2.ts.net' if explicit_url else 'grafana.localhost')
+        'host.tail-example.ts.net' if explicit_url else 'grafana.localhost')
     assert services['caddy']['environment']['OB_GRAFANA_AUTHORITY'] == (
-        'darkforge.tail694fe2.ts.net:8447' if explicit_url else '')
+        'host.tail-example.ts.net:8447' if explicit_url else '')
     assert services['caddy']['environment']['OB_TRUSTED_PROXIES'] == '172.30.0.2/32', 'Edge trust default'
     probe = ' '.join(services['caddy']['healthcheck']['test'])
     assert 'http://127.0.0.1/health/status | grep -qx ok' in probe and '$OB_PUBLIC_DOMAIN' in probe, probe
@@ -151,13 +177,13 @@ PY
 caddy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["caddy"]["image"])' "$work/filesystem.json")
 alloy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["alloy"]["image"])' "$work/filesystem.json")
 for enabled in false true; do
-for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'proxy observe.example.com' 'proxy darkforge.tail694fe2.ts.net'; do
+for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'proxy observe.example.com' 'proxy host.tail-example.ts.net'; do
   # shellcheck disable=SC2086
   set -- $mode
   url_host=
   authority=
   rustfs_authority=
-  if [ "$2" = darkforge.tail694fe2.ts.net ]; then
+  if [ "$2" = host.tail-example.ts.net ]; then
     url_host=$2
     authority=$2:8447
     rustfs_authority=$2:8451
@@ -249,9 +275,9 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
             assert 'problem' not in json.dumps(route), f'{path}: {health_path} exposes diagnostics'
     for removed in ('/health/gateway', '/health/backplane', 'lg-gateway', 'bp-server'):
         assert removed not in encoded, f'{path}: sibling health route {removed} remains'
-    if path.name.startswith('caddy-proxy-darkforge.tail694fe2.ts.net-'):
-        assert 'darkforge.tail694fe2.ts.net:8447' in encoded
-        assert 'darkforge.tail694fe2.ts.net:8451' in encoded
+    if path.name.startswith('caddy-proxy-host.tail-example.ts.net-'):
+        assert 'host.tail-example.ts.net:8447' in encoded
+        assert 'host.tail-example.ts.net:8451' in encoded
         assert 'http.request.hostport' in encoded
         assert 'grafana:3000' in encoded and '/health/grafana' in encoded
     if path.name.startswith('caddy-public-'):

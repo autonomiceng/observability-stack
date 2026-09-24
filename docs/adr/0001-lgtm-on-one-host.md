@@ -13,3 +13,12 @@ This deployment has one failure domain and no high availability. Local retention
 for logs and metrics, seven days for traces. Datastores remain on the private project network;
 only ingress and collection endpoints join the trusted Platform Network. Existing domain
 traces remain in their owning stack; Tempo accepts opt-in OTLP producers.
+
+## Amendment, 2026-09-24
+
+Owner decision D6: de-privilege the Collector. Alloy no longer embeds cAdvisor, so it runs
+with Docker's default capabilities, no host devices and without the `/sys`, `/var/lib/docker`, `/dev/disk` and `/var/run`
+mounts. No shipped dashboard panel or alert used container resource metrics. Alloy keeps
+root, the read-only Docker socket (log discovery) and the read-only host root mount (host
+filesystem metrics); the socket remains host-root equivalent. Container CPU and memory
+metrics return only with a collector that needs no full host privilege, or by a new decision.

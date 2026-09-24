@@ -24,12 +24,32 @@ queued remote-write data. Keep `.env` with backups; bootstrap refuses to generat
 secrets when installation state exists. Changing the env admin password after Grafana has
 initialized does not rotate its stored password; use Grafana's supported password change.
 
+## Env files
+
+`.env` holds operator settings and secrets. Bootstrap writes it on a fresh install, then
+changes it only to record `COMPOSE_FILE` and values given in the shell for that run. Values
+it resolves or derives (canonical origins, `OB_*_URL_HOST`, `OB_*_AUTHORITY`, the
+`OB_PUBLIC_PORT_SUFFIX` it derives, `COMPOSE_PROJECT_NAME`, the platform allocation and a
+keyed hash of the Grafana SMTP file) go to `data/derived.env` beside the env file, mode 0600, rewritten on every
+run. An upgrade moves the derived keys an earlier bootstrap saved in `.env` out on its first run.
+
+Compose reads `.env` alone by default, and `.env` cannot select more env files. Run Compose
+commands that create or recreate containers with both files, the derived one last:
+
+```sh
+docker compose --env-file .env --env-file data/derived.env up -d --no-deps grafana
+```
+
+`stop`, `start`, `ps`, `logs` and `exec` work with `.env` alone. Checkpoint tools resolve
+the same values and rewrite `data/derived.env` before running Compose. Edit `.env`, not
+`data/derived.env`, and rerun bootstrap.
+
 ## S3 profile
 
 For a fresh installation, set `COMPOSE_PROFILES=s3`, then run bootstrap. It records the matching
 Compose override. Validate with `docker compose config --quiet`; inspect the template with
 `docker compose config --no-interpolate`. Interpolated `docker compose config` output includes
-Grafana and S3 secrets. Never attach it to issues or public logs. Do not toggle a
+the S3 keys, the alert webhook URL and the Backplane token. Never attach it to issues or public logs. Do not toggle a
 running installation between storage modes: bootstrap refuses a mode change, and direct
 Compose commands cannot migrate stored data. Checkpoints include RustFS in S3 mode; the automated restore drills exercise both filesystem and S3 modes. RustFS uses the
 same pinned image as the gateway but has its own credentials, buckets and volume.
@@ -39,9 +59,12 @@ same pinned image as the gateway but has its own credentials, buckets and volume
 Grafana evaluates the rules in `Stacks / stack-health` every minute. No-data remains visible
 as `NoData`, and query failures as `Error`. An absent source cannot prove the threshold safe.
 Delivery uses `OB_ALERT_WEBHOOK_URL`, or `OB_ALERT_EMAIL` plus `OB_SMTP_URL`.
-Bootstrap renders `OB_STATE_DIR/grafana-provisioning` and the SMTP configuration before starting
-Grafana. `OB_STATE_DIR` is made private (mode 0700) because the generated SMTP
-configuration may contain credentials. Re-run bootstrap after changing delivery settings. SMTP URLs use
+Bootstrap renders `OB_STATE_DIR/grafana-provisioning` and, before starting Grafana, writes the
+admin password and SMTP configuration to `OB_STATE_DIR/secrets/grafana-admin` and
+`secrets/grafana.ini`, mounted as Compose file secrets. Compose keeps host ownership and
+Grafana runs as uid 472, so the files are 0644 inside the 0700 `secrets` directory; bootstrap
+also keeps `OB_STATE_DIR` at 0700. Neither value appears in Grafana's environment; a keyed hash
+of the SMTP file in `data/derived.env` recreates Grafana when it changes. Re-run bootstrap after changing delivery settings. SMTP URLs use
 `smtp://user:password@host:587` (required STARTTLS) or `smtps://user:password@host:465`;
 percent-encode reserved characters in credentials. The email address is also the sender.
 An unauthenticated relay can omit credentials. Bootstrap refuses an email address without
@@ -61,12 +84,6 @@ Test delivery from Grafana after provisioning.
 | Gateway archiver failure | `increase(pg_stat_archiver_failed_count{job="llm-gateway-postgres"}[15m]) > bool 0` for 5m. |
 | Scrape target down | `up{job=~"llm-gateway(-valkey\|-postgres\|-checkpoints)?\|backplane"} == bool 0` for 5m. `bool` returns 1 for a failed target into the > 0 threshold. `OB_SCRAPE_BACKPLANE=false` or `OB_SCRAPE_GATEWAY=false` removes that target. |
 
-Container restart detection is pending a producer for
-`container_started_at_seconds{compose_project,service,container}` sourced from Docker
-`State.StartedAt`. Alloy's Docker discovery cannot export that value as a Prometheus gauge,
-and cAdvisor's `container_start_time_seconds` is container creation time, so it does not
-change when the same container restarts.
-
 All four gateway jobs are gated by `OB_SCRAPE_GATEWAY`. Postgres metrics come from
 `lg-postgres-exporter:9187`. Checkpoint metrics come from `lg-gateway:8081/metrics` and
 LiteLLM metrics (job `llm-gateway`) from `lg-gateway:8081/metrics/litellm`, both without a
@@ -81,7 +98,8 @@ are changed by this stack.
 
 Compose does not recreate Alloy when only `config.alloy` changes, and bootstrap does not
 either. After updating a checkout that changes `config.alloy`, run
-`docker compose up --detach --no-deps --force-recreate alloy` to load the new pipelines.
+`docker compose --env-file .env --env-file data/derived.env up --detach --no-deps --force-recreate alloy`
+to load the new pipelines.
 
 Observability backup scripts atomically replace a `.prom` file under `OB_STATE_DIR/textfile`
 only after success. For example, the resulting file may contain:

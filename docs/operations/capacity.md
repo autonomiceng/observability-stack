@@ -14,7 +14,7 @@ Each long-lived service also has a 512-process limit:
 | --- | --- | --- | --- |
 | Caddy | 64 MiB | 256 MiB | Routing, TLS and concurrent requests |
 | Grafana | 384 MiB | 1024 MiB | SQLite, alert evaluation and query responses |
-| Alloy | 512 MiB | 1024 MiB | Docker discovery, cAdvisor, scrape buffers and remote-write WAL |
+| Alloy | 512 MiB | 1024 MiB | Docker discovery, scrape buffers and remote-write WAL |
 | Loki | 512 MiB | 1536 MiB | Active streams, WAL replay and two concurrent queries |
 | Mimir | 1024 MiB | 2048 MiB | 100,000 active series, WAL replay and two concurrent queries |
 | Tempo | 512 MiB | 1536 MiB | Trace buffers, WAL replay and compaction |
