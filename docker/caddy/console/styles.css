@@ -16,20 +16,9 @@ main {
 .summary { color: var(--pk-muted); font-size: var(--pk-size-small); }
 .checked { margin-left: auto; color: var(--pk-muted); font-size: var(--pk-size-meta); }
 
-.apps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--pk-space-4); }
-.pk-endpoint > a { font-size: var(--pk-size-small); }
-
 .details summary { color: var(--pk-accent); font-size: var(--pk-size-small); font-weight: 550; cursor: pointer; }
 .details[open] summary { margin-bottom: var(--pk-space-5); }
 .details section + section { margin-top: var(--pk-space-6); }
 .details .lead { margin: 0 0 var(--pk-space-3); color: var(--pk-muted); font-size: var(--pk-size-small); }
-.details .pk-endpoint > span:last-child { font-size: var(--pk-size-small); }
 .component { display: grid; flex: 1; min-width: 0; }
 .component span { color: var(--pk-muted); font-size: var(--pk-size-meta); }
-
-@media (max-width: 1100px) {
-  .apps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 700px) {
-  .apps { grid-template-columns: minmax(0, 1fr); }
-}

@@ -29,7 +29,8 @@ assert.deepEqual([undefined, on, {enabled: true, version: null}].map(c.versionTe
 assert.deepEqual([
   [null, {}], [{}, {}], [{}, {a: 'healthy', b: 'unreachable'}], [{}, {a: 'healthy', b: 'unknown'}], [{}, {a: 'unknown'}],
 ].map(([status, health]) => c.summaryText(status, health)),
-  ['Status unavailable', 'Nothing enabled', '1 of 2 reachable', '1 of 1 reachable · 1 unknown', '1 unknown']);
+  ['Status unavailable', 'Nothing enabled', '1 of 2 components reachable', '1 of 1 components reachable · 1 unknown',
+   '1 unknown']);
 const component = (id, enabled) => ({id, name: id, kind: 'app', enabled, image: 'grafana/grafana:13.2.2',
   version: '13.2.2', health: '/health/' + id});
 const valid = {contract: 2, stack: 'observability', configuredAt: '2026-09-28T20:00:00Z',

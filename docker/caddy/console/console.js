@@ -28,7 +28,7 @@ function summaryText(status, health) {
   if (!status) return "Status unavailable";
   const count = (state) => Object.values(health).filter((s) => s === state).length;
   const [up, down, unknown] = ["healthy", "unreachable", "unknown"].map(count);
-  const parts = [up + down && `${up} of ${up + down} reachable`, unknown && `${unknown} unknown`];
+  const parts = [up + down && `${up} of ${up + down} components reachable`, unknown && `${unknown} unknown`];
   return parts.filter(Boolean).join(" · ") || "Nothing enabled";
 }
 // Status v2 has a closed field set (docs/conventions.md): any other field makes the whole

@@ -28,25 +28,23 @@
     <noscript><p class="pk-notice">Enable JavaScript to view application links and health.</p></noscript>
 
     <section class="pk-card" aria-label="Applications">
-      <div class="apps">
-        <article class="pk-app" data-component="grafana">
-          <div class="pk-app-head">
-            <img src="/icons/grafana.svg" alt="">
-            <h3><a data-link="grafana" data-path="/" target="_blank" rel="noreferrer">Grafana ↗</a></h3>
-            <span class="pk-badge" data-state="unknown">Unknown</span>
-          </div>
-          <p class="pk-app-desc">Explore dashboards, logs, metrics and traces.</p>
-          <div class="pk-endpoints">
-            <div class="pk-endpoint"><span>Dashboard</span><a data-link="grafana" data-path="/d/stacks-overview" target="_blank" rel="noreferrer">Stacks overview</a></div>
-            <div class="pk-endpoint"><span>Logs</span><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22loki%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D" target="_blank" rel="noreferrer">Explore in Loki</a></div>
-            <div class="pk-endpoint"><span>Metrics</span><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22mimir%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D" target="_blank" rel="noreferrer">Explore in Mimir</a></div>
-            <div class="pk-endpoint"><span>Traces</span><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22tempo%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D" target="_blank" rel="noreferrer">Explore in Tempo</a></div>
-            <div class="pk-endpoint"><span>Alert delivery</span><span data-alerts><span class="pk-badge" data-state="unknown">Unknown</span></span></div>
-          </div>
-          <p class="pk-notice" data-state="warn" data-alerts-hint hidden>Alerts go nowhere: set <code>OB_ALERT_WEBHOOK_URL</code>, or <code>OB_ALERT_EMAIL</code> and <code>OB_SMTP_URL</code>, then rerun bootstrap.</p>
-          <div class="pk-app-foot"><span data-version>Version unknown</span></div>
-        </article>
-      </div>
+      <article class="pk-app" data-component="grafana">
+        <div class="pk-app-head">
+          <img src="/icons/grafana.svg" alt="">
+          <h3><a data-link="grafana" data-path="/" target="_blank" rel="noreferrer">Grafana ↗</a></h3>
+          <span class="pk-badge" data-state="unknown">Unknown</span>
+        </div>
+        <p class="pk-app-desc">Explore dashboards, logs, metrics and traces.</p>
+        <div class="pk-endpoints">
+          <div class="pk-endpoint"><span>Dashboard</span><a data-link="grafana" data-path="/d/stacks-overview" target="_blank" rel="noreferrer">Stacks overview</a></div>
+          <div class="pk-endpoint"><span>Logs</span><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22loki%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D" target="_blank" rel="noreferrer">Explore in Loki</a></div>
+          <div class="pk-endpoint"><span>Metrics</span><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22mimir%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D" target="_blank" rel="noreferrer">Explore in Mimir</a></div>
+          <div class="pk-endpoint"><span>Traces</span><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22tempo%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D" target="_blank" rel="noreferrer">Explore in Tempo</a></div>
+          <div class="pk-endpoint"><span>Alert delivery</span><span data-alerts><span class="pk-badge" data-state="unknown">Unknown</span></span></div>
+        </div>
+        <p class="pk-notice" data-state="warn" data-alerts-hint hidden>Alerts go nowhere: set <code>OB_ALERT_WEBHOOK_URL</code>, or <code>OB_ALERT_EMAIL</code> and <code>OB_SMTP_URL</code>, then rerun bootstrap.</p>
+        <div class="pk-app-foot"><span data-version>Version unknown</span></div>
+      </article>
     </section>
 
     <details class="pk-card details">
