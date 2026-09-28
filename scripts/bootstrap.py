@@ -43,6 +43,8 @@ PLATFORM_IP_RANGE = "172.30.0.128/25"
 EDGE_PROXY = "172.30.0.2/32"
 VOLUMES = ("caddy-data", "caddy-config", "grafana-data", "alloy-data",
            "loki-data", "tempo-data", "mimir-data", "rustfs-data")
+TLS_OVERLAYS = ("compose.files.yaml", "compose.acme-ca-root.yaml", "compose.acme-eab.yaml")
+SAN_NAME = re.compile(r"DNS:([^,\s]+)")
 
 # Secrets the stack needs and how many random bytes each gets (hex encoded).
 SECRETS: dict[str, int] = {
@@ -60,6 +62,8 @@ SAVED = (
     "OB_TRUSTED_PROXIES", "OB_GRAFANA_URL", "OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY",
     "OB_RUSTFS_CONSOLE", "OB_RUSTFS_CONSOLE_ALLOW", "OB_RUSTFS_HOST", "OB_RUSTFS_URL",
     "OB_RUSTFS_URL_HOST", "OB_RUSTFS_AUTHORITY", "OB_PLATFORM_SUBNET", "OB_PLATFORM_IP_RANGE",
+    "OB_TLS_ISSUER", "OB_ACME_EMAIL", "OB_ACME_CA", "OB_ACME_CA_ROOT", "OB_ACME_EAB_KEY_ID",
+    "OB_ACME_EAB_HMAC", "OB_TLS_DIR", "OB_TLS_CA",
 )
 # Earlier bootstraps saved these in the env file; they are always recomputed.
 DERIVED_ONLY = ("OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY", "OB_RUSTFS_URL_HOST", "OB_RUSTFS_AUTHORITY")
@@ -469,6 +473,10 @@ def access_config(settings: dict[str, str]) -> None:
     if (settings["OB_SCHEME"] not in ("http", "https") or
             (mode == "public" and settings["OB_SCHEME"] != "https")):
         raise Refused("access_mode_conflict", "OB_SCHEME must be http or https; public mode requires https")
+    settings["OB_TLS_ISSUER"] = tls_issuer(mode, settings.get("OB_TLS_ISSUER", ""))
+    # Compose interpolates the raw value, so only names with a Caddy snippet may pass.
+    if settings["OB_TLS_ISSUER"] not in {"local": ("internal", "files"), "public": ("acme", "files"), "proxy": ("",)}[mode]:
+        raise Refused("invalid_settings", "OB_TLS_ISSUER must be internal or files in local mode and acme or files in public mode")
     domain = settings.get("OB_PUBLIC_DOMAIN") or "localhost"
     settings["OB_PUBLIC_DOMAIN"] = domain
     try:
@@ -547,9 +555,100 @@ def access_config(settings: dict[str, str]) -> None:
             raise Refused("proxy_trust_invalid", "trust only exact proxy IPs or /32 and /128 host routes") from error
 
 
+def tls_issuer(mode: str, configured: str) -> str:
+    """The effective issuer; behind another gateway there is no HTTPS listener, so it is empty."""
+    if mode == "proxy":
+        return ""
+    return configured or {"public": "acme"}.get(mode, "internal")
+
+
+def tls_hostnames(settings: dict[str, str]) -> list[str]:
+    """Names of the HTTPS sites; 127.0.0.1 keeps the internal CA and configured origins add no names."""
+    hosts = [settings["OB_PUBLIC_DOMAIN"], settings["OB_GRAFANA_HOST"]]
+    return hosts + ([settings["OB_RUSTFS_HOST"]] if settings.get("OB_RUSTFS_CONSOLE") == "true" else [])
+
+
+def certificate_covers(names: set[str], host: str) -> bool:
+    return host in names or ("." in host and "*." + host.split(".", 1)[1] in names)
+
+
+def mounted_tls_files(settings: dict[str, str]) -> list[str]:
+    """Container paths of operator certificate inputs mounted by the selected overlays."""
+    if settings["OB_TLS_ISSUER"] == "files":
+        return ["/certs/tls.crt", "/certs/tls.key"]
+    if settings["OB_TLS_ISSUER"] == "acme" and settings.get("OB_ACME_CA_ROOT"):
+        return ["/certs/acme-ca-root.crt"]
+    return []
+
+
+def trust_files(settings: dict[str, str]) -> list[str]:
+    """Settings naming CA files the effective issuer uses."""
+    issuer = settings["OB_TLS_ISSUER"]
+    return [key for key, used in (("OB_TLS_CA", issuer in {"acme", "files"}), ("OB_ACME_CA_ROOT", issuer == "acme"))
+            if used and settings.get(key)]
+
+
+def check_tls_inputs(runner: Runner, settings: dict[str, str], root: Path) -> None:
+    issuer = settings["OB_TLS_ISSUER"]
+    if issuer == "files" and not settings.get("OB_TLS_DIR"):
+        raise Refused("invalid_settings", "OB_TLS_ISSUER=files needs OB_TLS_DIR, a directory holding tls.crt and tls.key")
+    if issuer == "acme":
+        if settings.get("OB_ACME_CA") and not re.fullmatch(r"https://[^/\s]+(?:/\S*)?", settings["OB_ACME_CA"]):
+            raise Refused("invalid_settings", "OB_ACME_CA must be an https:// ACME directory URL")
+        if bool(settings.get("OB_ACME_EAB_KEY_ID")) != bool(settings.get("OB_ACME_EAB_HMAC")):
+            raise Refused("invalid_settings", "OB_ACME_EAB_KEY_ID and OB_ACME_EAB_HMAC must be set together")
+        # trusted_roots replaces Caddy's trust pool for the ACME server; the public default would fail.
+        if settings.get("OB_ACME_CA_ROOT") and not settings.get("OB_ACME_CA"):
+            raise Refused("invalid_settings", "OB_ACME_CA_ROOT needs OB_ACME_CA, the private ACME directory it trusts")
+    for key in trust_files(settings):
+        path = root / settings[key]
+        try:
+            if not path.is_file():
+                raise OSError("not a regular file")
+            ssl.create_default_context(cadata=path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, ssl.SSLError) as error:
+            raise Refused("invalid_settings", f"{key} ({path}) must be a readable PEM file holding CA certificates") from error
+    if issuer != "files":
+        return
+    directory = root / settings["OB_TLS_DIR"]
+    certificate = directory / "tls.crt"
+    if not directory.is_dir() or not certificate.is_file() or not (directory / "tls.key").is_file():
+        raise Refused("invalid_settings", f"OB_TLS_DIR ({directory}) must be a directory holding tls.crt and tls.key")
+    if shutil.which("openssl") is None:
+        raise Refused("openssl_missing", "install openssl; bootstrap reads the certificate's subject alternative names with it")
+    result = runner(["openssl", "x509", "-in", str(certificate), "-noout", "-ext", "subjectAltName"])
+    if result.returncode:
+        raise Refused("invalid_settings", f"openssl cannot read {certificate} as a PEM certificate")
+    names = {name.lower() for name in SAN_NAME.findall(result.stdout)}
+    missing = [host for host in tls_hostnames(settings) if not certificate_covers(names, host.lower())]
+    if missing:
+        raise Refused("invalid_settings", f"{certificate} does not cover {', '.join(missing)}; its subject alternative names are "
+                      + (", ".join(sorted(names)) or "empty"))
+
+
+def check_tls_files_readable(runner: Runner, settings: dict[str, str], command: list[str]) -> None:
+    """Read the mounted certificate inputs in a throwaway Caddy container before starting."""
+    mounted = mounted_tls_files(settings)
+    if not mounted:
+        return
+    # Off every network: a one-off Caddy must never answer as ob-gateway on the Platform Network.
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
+        isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
+        isolated.flush()
+        result = runner(command + ["-f", isolated.name, "run", "--rm", "--no-deps", "-T", "--entrypoint", "sh",
+                                   "caddy", "-ec", f"cat {' '.join(mounted)} >/dev/null"])
+    if result.returncode:
+        raise Refused("tls_files_unreadable", "Caddy (uid 0 without CAP_DAC_OVERRIDE) cannot read "
+                      + ", ".join(mounted) + "; own tls.key by root with mode 0600, and keep certificates readable: "
+                      + (result.stderr or result.stdout).strip()[-500:])
+
+
 def compose_selection(root: Path, settings: dict[str, str], s3: bool, proxy: bool) -> list[str]:
     defaults = ["compose.yaml"] + (["compose.s3.yaml"] if s3 else []) + (["compose.proxy.yaml"] if proxy else [])
-    saved = settings.get("COMPOSE_FILE", "")
+    # A recorded TLS overlay from an earlier issuer would demand its unused input.
+    managed = {root / name for name in TLS_OVERLAYS}
+    saved = ":".join(name for name in settings.get("COMPOSE_FILE", "").split(":")
+                     if not name or (root / name).resolve() not in managed)
     generated = {":".join(["compose.yaml"] + extra) for extra in
                  ([], ["compose.s3.yaml"], ["compose.proxy.yaml"], ["compose.s3.yaml", "compose.proxy.yaml"])}
     # Keep generated mode selection compatible; preserve every custom overlay in order.
@@ -563,6 +662,15 @@ def compose_selection(root: Path, settings: dict[str, str], s3: bool, proxy: boo
         raise Refused("compose_file_conflict", "retain the base first and overlays matching the selected storage and access modes")
     if any(not path.is_file() for path in resolved):
         raise Refused("compose_file_conflict", "a selected Compose file is missing")
+    issuer = settings.get("OB_TLS_ISSUER", "")
+    overlays = ["compose.files.yaml"] if issuer == "files" else []
+    if issuer == "acme":
+        overlays += [name for name, key in (("compose.acme-ca-root.yaml", "OB_ACME_CA_ROOT"),
+                                            ("compose.acme-eab.yaml", "OB_ACME_EAB_KEY_ID")) if settings.get(key)]
+    # After the stack's storage and mode files, so operator overlays still apply last.
+    stack = {root / name for name in ("compose.yaml", "compose.s3.yaml", "compose.proxy.yaml")}
+    at = max(index for index, path in enumerate(resolved) if path in stack) + 1
+    files = files[:at] + [str(Path(files[at - 1]).with_name(name)) for name in overlays] + files[at:]
     selected = ":".join(files)
     if os.environ.get("COMPOSE_FILE") and os.environ["COMPOSE_FILE"] != selected:
         raise Refused("compose_file_conflict", "unset COMPOSE_FILE or record the same selection in .env")
@@ -693,6 +801,19 @@ def wait_ready(url: str, timeout: float = 120.0, host: str | None = None, ca_dat
     raise Refused("not_ready", f"{url}: {last}")
 
 
+def probe_trust(settings: dict[str, str], runner: Runner, command: list[str]) -> str:
+    """PEM data the HTTPS probe trusts; empty means the system store."""
+    if settings["OB_TLS_ISSUER"] == "internal":
+        certificate = runner(command + ["exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt"])
+        if certificate.returncode:
+            raise Refused("local_ca_unavailable", "cannot read this installation's public CA certificate")
+        return certificate.stdout
+    root = Path(__file__).resolve().parent.parent
+    for key in trust_files(settings):
+        return (root / settings[key]).read_text(encoding="utf-8")
+    return ""
+
+
 # Bound bootstrap commands without changing the shared runner used for bulk checkpoint I/O.
 def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int:
     parser = argparse.ArgumentParser(prog="bootstrap.py", description=__doc__.splitlines()[0])
@@ -732,6 +853,7 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
         s3 = "s3" in settings.get("COMPOSE_PROFILES", "").split(",")
         proxy = settings["OB_ACCESS_MODE"] == "proxy"
         files = compose_selection(root, settings, s3, proxy)
+        check_tls_inputs(runner, settings, root)
         project = settings["COMPOSE_PROJECT_NAME"]
         prefix = settings.get("OB_VOLUME_PREFIX") or PROJECT
         state_dir = Path(settings.get("OB_STATE_DIR", "./data"))
@@ -816,21 +938,28 @@ def bootstrap(argv: list[str], runner: Runner = partial(run, timeout=60)) -> int
         ensure_network(runner, settings.get("OB_PLATFORM_NETWORK", NETWORK),
                        settings["OB_PLATFORM_SUBNET"], settings["OB_PLATFORM_IP_RANGE"])
         ensure_volumes(runner, prefix, project, s3)
+        check_tls_files_readable(runner, settings, command + (["--profile", "s3"] if s3 else []))
         compose_up(root, env_file, runner, s3, proxy, files)
         scheme = settings.get("OB_SCHEME", "http")
         domain = settings.get("OB_PUBLIC_DOMAIN", "localhost")
         origin = domain + settings.get("OB_PUBLIC_PORT_SUFFIX", "")
-        for service in ("grafana", "loki", "tempo", "mimir", "alloy"):
-            wait_ready(f"{local_origin(settings)}/health/{service}", host=domain)
-        if settings["OB_ACCESS_MODE"] == "public":
-            wait_ready(f"{local_origin(settings)}/login", host=settings["OB_GRAFANA_HOST"])
-        if settings["OB_ACCESS_MODE"] == "local":
-            certificate = runner(["docker", "compose", "--project-directory", str(root), *env_files(env_file),
-                                  "exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt"])
-            if certificate.returncode:
-                raise Refused("local_ca_unavailable", "cannot read this installation's public CA certificate")
-            for service in ("grafana", "loki", "tempo", "mimir", "alloy"):
-                wait_ready(f"{local_origin(settings, 'https')}/health/{service}", host=domain, ca_data=certificate.stdout)
+        services = ("grafana", "loki", "tempo", "mimir", "alloy")
+        if settings["OB_ACCESS_MODE"] != "public":
+            for service in services:
+                wait_ready(f"{local_origin(settings)}/health/{service}", host=domain)
+        if settings["OB_ACCESS_MODE"] != "proxy":
+            trusted = probe_trust(settings, runner, command)
+            probes = [(f"/health/{service}", domain) for service in services]
+            if settings["OB_ACCESS_MODE"] == "public":
+                probes.append(("/login", settings["OB_GRAFANA_HOST"]))
+            try:
+                for path, host in probes:
+                    wait_ready(local_origin(settings, "https") + path, host=host, ca_data=trusted)
+            except Refused as refused:
+                if ("CERTIFICATE_VERIFY_FAILED" in refused.detail and settings["OB_TLS_ISSUER"] != "internal"
+                        and not settings.get("OB_TLS_CA")):
+                    refused.detail += "; set OB_TLS_CA to the issuing CA's PEM file when it is not in the system trust store"
+                raise
         write_status(state_dir, document)
         print(json.dumps({
             "status": "degraded" if delivery == "placeholder" else "ready",

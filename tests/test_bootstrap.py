@@ -55,7 +55,7 @@ class BootstrapTests(unittest.TestCase):
         self.env = self.root / ".env"
         self.template = Path(__file__).resolve().parent.parent / ".env.example"
         shutil.copytree(self.template.parent / 'docker', self.root / 'docker')
-        for name in ('compose.yaml', 'compose.s3.yaml', 'compose.proxy.yaml'):
+        for name in ('compose.yaml', 'compose.s3.yaml', 'compose.proxy.yaml', *bootstrap.TLS_OVERLAYS):
             shutil.copy(self.template.parent / name, self.root / name)
 
     def tearDown(self):
@@ -916,6 +916,151 @@ class BootstrapTests(unittest.TestCase):
             run = runner_with()
             bootstrap.compose_up(self.root, self.env, run, bool(profile), True)
             self.assertIn(str(self.root / "compose.proxy.yaml"), run.calls[-1])
+
+
+    def test_default_issuer_per_mode_and_refused_pairs(self):
+        self.assertEqual([bootstrap.tls_issuer(mode, "") for mode in ("local", "public", "proxy")], ["internal", "acme", ""])
+        base = {"OB_PUBLIC_DOMAIN": "observe.example.com", "OB_TRUSTED_PROXIES": "192.0.2.2/32"}
+        for mode, issuer, effective in (("local", "", "internal"), ("public", "", "acme"), ("local", "files", "files"),
+                                         ("public", "files", "files"), ("proxy", "acme", ""), ("proxy", "none", "")):
+            with self.subTest(mode=mode, issuer=issuer):
+                settings = {**base, "OB_ACCESS_MODE": mode, "OB_TLS_ISSUER": issuer}
+                bootstrap.access_config(settings)
+                self.assertEqual(settings["OB_TLS_ISSUER"], effective)
+        for mode, issuer in (("public", "internal"), ("local", "acme"), ("local", "none"), ("public", "self-signed")):
+            with self.subTest(mode=mode, issuer=issuer), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.access_config({**base, "OB_ACCESS_MODE": mode, "OB_TLS_ISSUER": issuer})
+            self.assertEqual(raised.exception.code, "invalid_settings")
+        # Compose reads the effective issuer from data/derived.env; there is no public overlay.
+        self.env.write_text("OB_ACCESS_MODE=public\nOB_PUBLIC_DOMAIN=observe.example.com\n")
+        self.render()
+        self.assertEqual(self.derived()["OB_TLS_ISSUER"], "acme")
+
+    def tls_settings(self, **values):
+        settings = {"OB_ACCESS_MODE": "public", "OB_PUBLIC_DOMAIN": "observe.example.com", "OB_TLS_ISSUER": "files",
+                    "OB_TLS_DIR": str(self.root / "certs"), **values}
+        bootstrap.access_config(settings)
+        return settings
+
+    def test_files_issuer_without_key_is_refused(self):
+        (self.root / "certs").mkdir()
+        (self.root / "certs" / "tls.crt").write_text("certificate")
+        runner = runner_with()
+        for settings in (self.tls_settings(OB_TLS_DIR=""), self.tls_settings()):
+            with self.subTest(directory=settings["OB_TLS_DIR"]), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.check_tls_inputs(runner, settings, self.root)
+            self.assertEqual(raised.exception.code, "invalid_settings")
+            self.assertIn("OB_TLS_DIR", raised.exception.detail)
+        self.assertEqual(runner.calls, [])
+
+    def test_certificate_must_cover_every_configured_hostname(self):
+        (self.root / "certs").mkdir()
+        for name in ("tls.crt", "tls.key"):
+            (self.root / "certs" / name).write_text(name)
+
+        def openssl(names):
+            return lambda argv, **options: subprocess.CompletedProcess(
+                argv, 0, "X509v3 Subject Alternative Name: \n    " + ", ".join("DNS:" + n for n in names) + "\n", "")
+        with patch.object(bootstrap.shutil, "which", return_value="/usr/bin/openssl"):
+            bootstrap.check_tls_inputs(openssl(["observe.example.com", "*.OBSERVE.example.com"]), self.tls_settings(), self.root)
+            bootstrap.check_tls_inputs(openssl(["observe.example.com", "grafana.observe.example.com"]),
+                                       self.tls_settings(), self.root)
+            console = {"COMPOSE_PROFILES": "s3", "OB_RUSTFS_CONSOLE": "true"}
+            for names, settings, uncovered in (
+                (["*.observe.example.com"], {}, "cover observe.example.com;"),
+                (["observe.example.com", "*.grafana.observe.example.com"], {}, "grafana.observe.example.com"),
+                (["observe.example.com", "grafana.observe.example.com"], console, "rustfs.observe.example.com"),
+                (["localhost", "*.localhost"], {"OB_ACCESS_MODE": "local", "OB_PUBLIC_DOMAIN": "127.0.0.1"}, "127.0.0.1"),
+            ):
+                with self.subTest(names=names), self.assertRaises(bootstrap.Refused) as raised:
+                    bootstrap.check_tls_inputs(openssl(names), self.tls_settings(**settings), self.root)
+                self.assertEqual(raised.exception.code, "invalid_settings")
+                self.assertIn(uncovered, raised.exception.detail)
+
+    def test_acme_inputs(self):
+        runner = runner_with()
+        ca = "https://ca.example.internal/acme/acme/directory"
+        bootstrap.check_tls_inputs(runner, self.tls_settings(OB_TLS_ISSUER="acme", OB_ACME_CA=ca, OB_ACME_EMAIL=""), self.root)
+        bootstrap.check_tls_inputs(runner, self.tls_settings(OB_TLS_ISSUER="acme", OB_ACME_CA=ca,
+                                                              OB_ACME_EAB_KEY_ID="kid", OB_ACME_EAB_HMAC="mac"), self.root)
+        (self.root / "not-pem.crt").write_text("not a certificate")
+        for values, setting in (({"OB_ACME_CA": "http://ca.example.internal/directory"}, "OB_ACME_CA"),
+                                ({"OB_ACME_CA": ca, "OB_ACME_EAB_KEY_ID": "kid"}, "OB_ACME_EAB_HMAC"),
+                                ({"OB_ACME_CA": ca, "OB_ACME_EAB_HMAC": "secret-mac"}, "OB_ACME_EAB_KEY_ID"),
+                                ({"OB_ACME_CA_ROOT": str(self.root / "not-pem.crt")}, "OB_ACME_CA_ROOT needs OB_ACME_CA"),
+                                ({"OB_ACME_CA": ca, "OB_ACME_CA_ROOT": str(self.root / "not-pem.crt")}, "PEM"),
+                                ({"OB_TLS_CA": str(self.root)}, "OB_TLS_CA")):
+            with self.subTest(values=values), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.check_tls_inputs(runner, self.tls_settings(OB_TLS_ISSUER="acme", **values), self.root)
+            self.assertEqual(raised.exception.code, "invalid_settings")
+            self.assertIn(setting, raised.exception.detail)
+            self.assertNotIn("secret-mac", raised.exception.detail)
+        self.assertEqual(runner.calls, [])
+
+    def test_compose_file_selection_strips_and_appends_managed_overlays(self):
+        (self.root / "operator.yaml").write_text("services: {}\n")
+        for values, s3, proxy, expected in (
+            ({"OB_TLS_ISSUER": "files"}, False, False, "compose.yaml:compose.files.yaml"),
+            ({"OB_TLS_ISSUER": "acme", "OB_ACME_CA_ROOT": "ca.pem", "OB_ACME_EAB_KEY_ID": "kid",
+              "COMPOSE_FILE": "compose.yaml:compose.s3.yaml:compose.files.yaml:operator.yaml"}, True, False,
+             "compose.yaml:compose.s3.yaml:compose.acme-ca-root.yaml:compose.acme-eab.yaml:operator.yaml"),
+            ({"OB_TLS_ISSUER": "files", "COMPOSE_FILE": str(self.root / "compose.yaml")}, False, False,
+             str(self.root / "compose.yaml") + ":" + str(self.root / "compose.files.yaml")),
+            ({"OB_TLS_ISSUER": "", "OB_ACME_CA_ROOT": "ca.pem",
+              "COMPOSE_FILE": "compose.yaml:compose.proxy.yaml:compose.acme-eab.yaml"}, False, True,
+             "compose.yaml:compose.proxy.yaml"),
+            ({"OB_TLS_ISSUER": "internal", "COMPOSE_FILE": "compose.yaml:compose.files.yaml"}, False, False, "compose.yaml"),
+        ):
+            with self.subTest(values=values):
+                self.assertEqual(":".join(bootstrap.compose_selection(self.root, values, s3, proxy)), expected)
+                self.assertEqual(values["COMPOSE_FILE"], expected)
+        # A recorded overlay from an earlier issuer is dropped from the env file on the next run.
+        self.env.write_text("OB_TLS_ISSUER=files\nOB_TLS_DIR=certs\n")
+        (self.root / "certs").mkdir()
+        with patch.object(bootstrap, "check_tls_inputs"):
+            self.render()
+        self.assertIn("COMPOSE_FILE=compose.yaml:compose.files.yaml\n", self.env.read_text())
+        self.env.write_text(self.env.read_text().replace("OB_TLS_ISSUER=files\n", "OB_TLS_ISSUER=\n"))
+        self.render()
+        self.assertIn("COMPOSE_FILE=compose.yaml\n", self.env.read_text())
+        # The pre-start readability check reads the mounted files with the selected overlays.
+        runner = runner_with()
+        command = ["docker", "compose", "-f", "compose.yaml", "-f", "compose.files.yaml"]
+        bootstrap.check_tls_files_readable(runner, {"OB_TLS_ISSUER": "files"}, command)
+        self.assertEqual(runner.calls[0][:6], command)
+        self.assertEqual(runner.calls[0][-3:], ["caddy", "-ec", "cat /certs/tls.crt /certs/tls.key >/dev/null"])
+        failing = lambda argv, **options: subprocess.CompletedProcess(argv, 1, "", "Permission denied")
+        with self.assertRaises(bootstrap.Refused) as raised:
+            bootstrap.check_tls_files_readable(failing, {"OB_TLS_ISSUER": "files"}, command)
+        self.assertEqual(raised.exception.code, "tls_files_unreadable")
+
+    def test_probe_trust_order_and_hint(self):
+        tls_ca, acme_root = self.root / "tls-ca.pem", self.root / "acme-root.pem"
+        tls_ca.write_text("tls ca")
+        acme_root.write_text("acme root")
+        runner = lambda argv, **options: subprocess.CompletedProcess(argv, 0, "internal root", "")
+        for issuer, values, expected in (
+            ("internal", {"OB_TLS_CA": str(tls_ca)}, "internal root"),
+            ("files", {"OB_TLS_CA": str(tls_ca), "OB_ACME_CA_ROOT": str(acme_root)}, "tls ca"),
+            ("acme", {"OB_TLS_CA": str(tls_ca), "OB_ACME_CA_ROOT": str(acme_root)}, "tls ca"),
+            ("acme", {"OB_ACME_CA_ROOT": str(acme_root)}, "acme root"),
+            ("files", {"OB_ACME_CA_ROOT": str(acme_root)}, ""),
+            ("acme", {}, ""),
+        ):
+            with self.subTest(issuer=issuer, values=values):
+                self.assertEqual(bootstrap.probe_trust({"OB_TLS_ISSUER": issuer, **values}, runner, ["docker", "compose"]),
+                                 expected)
+        self.env.write_text("OB_ACCESS_MODE=public\nOB_PUBLIC_DOMAIN=observe.example.com\nOB_ACME_CA_ROOT=acme-root.pem\n"
+                            "OB_ACME_CA=https://ca.example.internal/acme/acme/directory\n")
+        failure = bootstrap.Refused("not_ready", "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        # Relative trust paths resolve against the checkout; the PEM checks have their own test.
+        with patch.object(bootstrap, "__file__", str(self.root / "scripts/bootstrap.py")), \
+                patch.object(bootstrap, "check_tls_inputs"), \
+                patch.object(bootstrap, "wait_ready", side_effect=[None] * 5 + [failure]) as ready, \
+                self.assertRaises(bootstrap.Refused) as raised:
+            bootstrap.bootstrap(["--template", str(self.template)], runner=runner_with())
+        self.assertEqual({call.kwargs["ca_data"] for call in ready.call_args_list}, {"acme root"})
+        self.assertIn("set OB_TLS_CA", raised.exception.detail)
 
 
 class ConsoleAccessTests(unittest.TestCase):

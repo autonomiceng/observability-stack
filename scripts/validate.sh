@@ -8,7 +8,7 @@ unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES
 for key in $(env | sed -n 's/^\(OB_[A-Z0-9_]*\)=.*/\1/p'); do
   unset "$key"
 done
-for tool in docker python3 shellcheck; do
+for tool in docker python3 shellcheck openssl; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 shellcheck scripts/*.sh
@@ -126,6 +126,51 @@ assert len(lines) == 8
 assert all(re.fullmatch(r'image: \$\{OB_[A-Z0-9_]+_IMAGE:-[^\s{}]+:[^\s:@]+@sha256:[0-9a-f]{64}\}', line) for line in lines), 'Renovate-readable image defaults'
 PY_IMAGES
 echo 'compose config and pins: PASS'
+# Throwaway certificate inputs for the files issuer and the private ACME trust file.
+mkdir "$work/certs" "$work/public" "$work/acme" "$work/files"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/certs/tls.key" -out "$work/certs/tls.crt" \
+  -subj /CN=example.com -addext 'subjectAltName=DNS:example.com,DNS:*.example.com,DNS:localhost,DNS:*.localhost' -days 2 2>/dev/null
+cp "$work/certs/tls.crt" "$work/acme-ca-root.crt"
+acme_ca=https://ca.example.com/acme/acme/directory
+OB_ACCESS_MODE=public OB_PUBLIC_DOMAIN=observe.example.com \
+  python3 scripts/bootstrap.py --env-file "$work/public/.env" --render-only >/dev/null
+OB_ACCESS_MODE=public OB_PUBLIC_DOMAIN=observe.example.com OB_ACME_CA=$acme_ca OB_ACME_CA_ROOT="$work/acme-ca-root.crt" \
+  OB_ACME_EAB_KEY_ID=key-id OB_ACME_EAB_HMAC=bWFj python3 scripts/bootstrap.py --env-file "$work/acme/.env" --render-only >/dev/null
+OB_TLS_ISSUER=files OB_TLS_DIR="$work/certs" python3 scripts/bootstrap.py --env-file "$work/files/.env" --render-only >/dev/null
+compose "$work/public" -f compose.yaml config --format json > "$work/tls-public.json"
+compose "$work/acme" -f compose.yaml -f compose.acme-ca-root.yaml -f compose.acme-eab.yaml config --format json > "$work/tls-acme.json"
+compose "$work/files" -f compose.yaml -f compose.files.yaml config --format json > "$work/tls-files.json"
+python3 - "$work" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, 'scripts')
+import bootstrap
+work = Path(sys.argv[1])
+caddy = {name: json.loads((work / f'{name}.json').read_text())['services']['caddy']
+         for name in ('filesystem', 'proxy', 'tls-public', 'tls-acme', 'tls-files')}
+assert [caddy[name]['environment']['OB_TLS_ISSUER'] for name in ('filesystem', 'tls-public', 'proxy')] == ['internal', 'acme', '']
+environment = caddy['tls-acme']['environment']
+assert (environment['OB_TLS_ISSUER'], environment['OB_ACME_TRUST'], environment['OB_ACME_ACCOUNT']) == ('acme', 'file', 'eab')
+assert (environment['OB_ACME_CA'], environment['OB_ACME_EAB_KEY_ID'], environment['OB_ACME_EAB_HMAC']) == (
+    'https://ca.example.com/acme/acme/directory', 'key-id', 'bWFj')
+root = {mount['target']: mount for mount in caddy['tls-acme']['volumes']}['/certs/acme-ca-root.crt']
+assert root['source'] == str(work / 'acme-ca-root.crt') and root['read_only'], root
+certs = {mount['target']: mount for mount in caddy['tls-files']['volumes']}['/certs']
+assert certs['source'] == str(work / 'certs') and certs['read_only'], certs
+assert caddy['tls-files']['environment']['OB_TLS_ISSUER'] == 'files'
+# Some Compose releases drop a false create_host_path from the rendered config; check the source.
+for overlay in ('compose.files.yaml', 'compose.acme-ca-root.yaml'):
+    assert 'create_host_path: false' in Path(overlay).read_text(), overlay + ' must not create the host path'
+# Caddy applies snippet defaults only to unset variables; the base must not define these.
+for name in ('filesystem', 'proxy', 'tls-public', 'tls-files'):
+    leaked = {'OB_ACME_TRUST', 'OB_ACME_ACCOUNT', 'OB_ACME_EAB_KEY_ID', 'OB_ACME_EAB_HMAC'} & set(caddy[name]['environment'])
+    assert not leaked, f'{name}: ACME account and trust settings leak into the base: {sorted(leaked)}'
+recorded = {name: bootstrap.assignments((work / name / '.env').read_text().splitlines())['COMPOSE_FILE']
+            for name in ('public', 'acme', 'files')}
+assert recorded == {'public': 'compose.yaml', 'acme': 'compose.yaml:compose.acme-ca-root.yaml:compose.acme-eab.yaml',
+                    'files': 'compose.yaml:compose.files.yaml'}, recorded
+PY
+echo 'TLS overlays: default issuer per mode, read-only mounts without host path creation, ACME settings only from overlays: PASS'
 # Alloy's unauthenticated UI and API show target labels; only bearer_token is redacted.
 OB_SCRAPE_BACKPLANE=true OB_BACKPLANE_OPERATIONS_TOKEN=validation-only-backplane-token \
   compose "$work" -f compose.yaml config --format json > "$work/token.out"
@@ -177,9 +222,22 @@ PY
 caddy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["caddy"]["image"])' "$work/filesystem.json")
 alloy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["alloy"]["image"])' "$work/filesystem.json")
 for enabled in false true; do
-for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'proxy observe.example.com' 'proxy host.tail-example.ts.net'; do
+# access-mode domain issuer; the issuer names a variant below, none means no HTTPS listener.
+for mode in 'local localhost internal' 'local localhost files' 'local 127.0.0.1 internal' \
+    'public observe.example.com acme' 'public observe.example.com acme-ca' 'public observe.example.com acme-eab' \
+    'public observe.example.com files' 'proxy observe.example.com none' 'proxy host.tail-example.ts.net none'; do
   # shellcheck disable=SC2086
   set -- $mode
+  case "$3" in
+    internal) tls='-e OB_TLS_ISSUER=internal' ;;
+    files) tls="-e OB_TLS_ISSUER=files -v $work/certs:/certs:ro" ;;
+    acme) tls='-e OB_TLS_ISSUER=acme -e OB_ACME_EMAIL= -e OB_ACME_CA=' ;;
+    acme-ca) tls="-e OB_TLS_ISSUER=acme -e OB_ACME_EMAIL=ops@example.com -e OB_ACME_CA=$acme_ca -e OB_ACME_TRUST=file
+      -v $work/acme-ca-root.crt:/certs/acme-ca-root.crt:ro" ;;
+    acme-eab) tls="-e OB_TLS_ISSUER=acme -e OB_ACME_EMAIL= -e OB_ACME_CA=$acme_ca -e OB_ACME_ACCOUNT=eab
+      -e OB_ACME_EAB_KEY_ID=key-id -e OB_ACME_EAB_HMAC=bWFj" ;;
+    *) tls='-e OB_TLS_ISSUER=' ;;
+  esac
   url_host=
   authority=
   rustfs_authority=
@@ -188,18 +246,19 @@ for mode in 'local localhost' 'local 127.0.0.1' 'public observe.example.com' 'pr
     authority=$2:8447
     rustfs_authority=$2:8451
   fi
+  # shellcheck disable=SC2086 # $tls holds several docker arguments without spaces.
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \
     -e "OB_ACCESS_MODE=$1" -e "OB_PUBLIC_DOMAIN=$2" -e OB_GRAFANA_HOST=grafana.example.com \
     -e OB_TRUSTED_PROXIES=172.30.0.2/32 -e OB_RUSTFS_HOST=rustfs.example.com \
     -e "OB_RUSTFS_CONSOLE_ALLOW=100.100.1.2/32" \
     -e "OB_RUSTFS_CONSOLE=$enabled" -e "OB_RUSTFS_URL_HOST=$url_host" -e "OB_RUSTFS_AUTHORITY=$rustfs_authority" \
-    -e "OB_GRAFANA_URL_HOST=$url_host" -e "OB_GRAFANA_AUTHORITY=$authority" \
+    -e "OB_GRAFANA_URL_HOST=$url_host" -e "OB_GRAFANA_AUTHORITY=$authority" $tls \
     -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" "$caddy_image" \
-    caddy adapt --validate --config /etc/caddy/Caddyfile > "$work/caddy-$1-$2-$enabled.json"
+    caddy adapt --validate --config /etc/caddy/Caddyfile > "$work/caddy-$1-$2-$3-$enabled.json"
 done
 done
 python3 - "$work" <<'PY'
-import json, sys
+import json, re, sys
 from pathlib import Path
 
 def objects(value):
@@ -280,13 +339,20 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
         assert 'host.tail-example.ts.net:8451' in encoded
         assert 'http.request.hostport' in encoded
         assert 'grafana:3000' in encoded and '/health/grafana' in encoded
+    issuer = re.fullmatch(r'caddy-[a-z]+-.+?-(internal|files|acme|acme-ca|acme-eab|none)-(true|false)', path.stem)[1]
+    loaded = config['apps'].get('tls', {}).get('certificates', {}).get('load_files', [])
+    assert (loaded == [{'certificate': '/certs/tls.crt', 'key': '/certs/tls.key', 'tags': ['cert0']}]) == (issuer == 'files'), path
+    assert ('"module": "acme"' in encoded) == issuer.startswith('acme'), path
+    assert ('https://ca.example.com/acme/acme/directory' in encoded) == (issuer in ('acme-ca', 'acme-eab')), path
+    assert ('/certs/acme-ca-root.crt' in encoded) == (issuer == 'acme-ca'), path
+    assert ('external_account' in encoded) == (issuer == 'acme-eab'), path
     if path.name.startswith('caddy-public-'):
         assert 'https://observe.example.com' in encoded and '308' in encoded
         assert '/health/grafana' in encoded
-        assert '"module": "acme"' in encoded
         assert any('/status.json' in json.dumps(server) and 'Location' in json.dumps(server)
                    for server in servers), f'{path}: public HTTP route lacks status bypass'
     if path.name.startswith('caddy-local-'):
+        # 127.0.0.1 keeps the internal CA with every issuer.
         assert '"module": "internal"' in encoded
         assert '/rustfs/console/' in encoded
         # Every local redirect must be the relative native-console landing.
@@ -298,7 +364,7 @@ for path in Path(sys.argv[1]).glob('caddy-*.json'):
         assert logger['encoder']['wrap']['format'] == 'json'
         assert logger['encoder']['fields']['request>headers']['filter'] == 'delete'
 PY
-echo 'Caddyfile (3 access modes, trusted proxy, RustFS off/on, status-only health): PASS'
+echo 'Caddyfile (18 configurations: local-internal, local-files, public-acme, public-acme-ca, public-acme-eab, public-files, proxy; trusted proxy, RustFS off/on, status-only health): PASS'
 for enabled in true false; do
 for token in '' validation-only; do
   docker run --rm --log-driver=journald --log-opt cache-disabled=true \

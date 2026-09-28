@@ -1,0 +1,12 @@
+# Selected by bootstrap when OB_ACME_CA_ROOT is set: the private ACME server's trust file.
+services:
+  caddy:
+    environment:
+      OB_ACME_TRUST: file
+    volumes:
+      - type: bind
+        source: ${OB_ACME_CA_ROOT:?OB_ACME_CA_ROOT must be the ACME server's CA file}
+        target: /certs/acme-ca-root.crt
+        read_only: true
+        bind:
+          create_host_path: false

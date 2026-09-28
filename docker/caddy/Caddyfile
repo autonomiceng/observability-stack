@@ -171,15 +171,68 @@
 	}
 }
 
+# Issuer snippets, selected by OB_TLS_ISSUER; bootstrap validates the mode and issuer pair.
+(tls-internal) {
+	tls internal
+}
+# Empty email and dir mean Caddy's defaults (Let's Encrypt). Caddy refuses empty trusted_roots
+# and eab arguments, so the overlays that supply them also select those snippets.
+(tls-acme) {
+	tls {
+		issuer acme {
+			email "{$OB_ACME_EMAIL}"
+			dir "{$OB_ACME_CA}"
+			import acme-trust-{$OB_ACME_TRUST:system}
+			import acme-account-{$OB_ACME_ACCOUNT:none}
+		}
+	}
+}
+(acme-trust-system) {
+}
+(acme-trust-file) {
+	trusted_roots /certs/acme-ca-root.crt
+}
+(acme-account-none) {
+}
+(acme-account-eab) {
+	eab "{$OB_ACME_EAB_KEY_ID}" "{$OB_ACME_EAB_HMAC}"
+}
+# compose.files.yaml mounts OB_TLS_DIR read-only at /certs.
+(tls-files) {
+	tls /certs/tls.crt /certs/tls.key
+}
+
 (rustfs-tls-local-false) {
 }
 
 (rustfs-tls-local-true) {
 	https://{$OB_RUSTFS_HOST:rustfs.localhost} {
-		tls internal
+		import tls-{$OB_TLS_ISSUER}
 		header -Strict-Transport-Security
 		import access-log
 		import rustfs-routes
+	}
+}
+
+(local-root-internal) {
+	https://{$OB_PUBLIC_DOMAIN:localhost}, https://127.0.0.1 {
+		import tls-internal
+		header -Strict-Transport-Security
+		import console
+	}
+}
+
+# Operator certificates name DNS hosts; 127.0.0.1 keeps the internal CA.
+(local-root-files) {
+	https://{$OB_PUBLIC_DOMAIN:localhost} {
+		import tls-files
+		header -Strict-Transport-Security
+		import console
+	}
+	https://127.0.0.1 {
+		import tls-internal
+		header -Strict-Transport-Security
+		import console
 	}
 }
 
@@ -198,13 +251,9 @@
 		header -Strict-Transport-Security
 		import app grafana:3000
 	}
-	https://{$OB_PUBLIC_DOMAIN:localhost}, https://127.0.0.1 {
-		tls internal
-		header -Strict-Transport-Security
-		import console
-	}
+	import local-root-{$OB_TLS_ISSUER}
 	https://{$OB_GRAFANA_HOST:grafana.localhost} {
-		tls internal
+		import tls-{$OB_TLS_ISSUER}
 		header -Strict-Transport-Security
 		import app grafana:3000
 	}
@@ -215,9 +264,7 @@
 
 (rustfs-tls-public-true) {
 	https://{$OB_RUSTFS_HOST:rustfs.localhost} {
-		tls {
-			issuer acme
-		}
+		import tls-{$OB_TLS_ISSUER}
 		import access-log
 		import rustfs-routes
 	}
@@ -244,15 +291,11 @@
 		redir https://{$OB_GRAFANA_HOST}{$OB_PUBLIC_PORT_SUFFIX}{uri} 308
 	}
 	https://{$OB_PUBLIC_DOMAIN} {
-		tls {
-			issuer acme
-		}
+		import tls-{$OB_TLS_ISSUER}
 		import console
 	}
 	https://{$OB_GRAFANA_HOST} {
-		tls {
-			issuer acme
-		}
+		import tls-{$OB_TLS_ISSUER}
 		import app grafana:3000
 	}
 }

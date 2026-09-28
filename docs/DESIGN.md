@@ -108,7 +108,12 @@ Metric contracts and absent-source behavior are in `operations/maintenance.md`.
 `OB_ACCESS_MODE` selects local (HTTP plus internal-CA HTTPS, no redirects or HSTS), public
 (ACME HTTPS with HTTP redirects except exact health routes), or proxy (HTTP only behind
 Platform Edge). Bootstrap records `compose.proxy.yaml` for proxy mode so port 443 is not
-published. `OB_SCHEME` describes the canonical external origin separately from listeners.
+published. `OB_TLS_ISSUER` replaces the mode's issuer: `internal`, `acme` (public or private
+directory, optional trust file and external account binding) or `files` (operator
+certificate and key mounted read-only). Bootstrap refuses an issuer the mode cannot use, a
+file certificate that does not cover every HTTPS hostname and files Caddy cannot read,
+records the matching TLS overlays in `COMPOSE_FILE`, and its HTTPS readiness probe trusts
+the configured CA file. `OB_SCHEME` describes the canonical external origin separately from listeners.
 An optional `OB_GRAFANA_URL` overrides Grafana's browser origin and domain without
 changing its internal hostname or the listener mode. In proxy mode Caddy matches its
 full authority, including the port, so other services on the same machine hostname

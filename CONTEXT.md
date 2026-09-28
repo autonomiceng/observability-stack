@@ -45,13 +45,18 @@ host for ingress and collection, with the default allocation `172.30.0.0/24`
 Edge at `172.30.0.2` by default; another subnet needs the matching `OB_TRUSTED_PROXIES`.
 _Avoid_: default network, public network
 
-**Local Mode**: the default access mode, serving HTTP and internal-CA HTTPS on loopback
-with HTTP as the browser scheme by default.
+**Local Mode**: the default access mode, serving HTTP and HTTPS on loopback with HTTP as
+the browser scheme by default; HTTPS uses the internal CA unless another Issuer is selected.
 _Avoid_: development mode
 
-**Public Mode**: the access mode for an operator's domain, with Let's Encrypt HTTPS and
-HTTP redirects.
+**Public Mode**: the access mode for an operator's domain, with HTTPS and HTTP redirects;
+certificates come from ACME (Let's Encrypt) by default.
 _Avoid_: production mode
+
+**Issuer**: the source of the Stack Gateway's HTTPS certificates, selected by
+`OB_TLS_ISSUER` independently of the access mode: Caddy's internal CA, an ACME directory,
+or operator certificate files.
+_Avoid_: certificate mode, TLS provider
 
 **Proxy Mode**: the access mode behind Platform Edge or another gateway that handles HTTPS,
 listening on HTTP only and trusting the configured proxies for the forwarded scheme.

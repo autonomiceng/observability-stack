@@ -6,6 +6,7 @@ optional RustFS console, and what the shared network exposes.
 - [Hostnames and modes](#hostnames-and-modes)
 - [Local Mode (default)](#local-mode-default)
 - [Public Mode](#public-mode)
+- [Corporate certificates and private ACME](#corporate-certificates-and-private-acme)
 - [Behind Platform Edge](#behind-platform-edge)
 - [Tailscale](#tailscale)
 - [Application URLs](#application-urls)
@@ -28,16 +29,16 @@ Caddy is the only published entry.
 running bootstrap; bootstrap records the Compose file selection and writes the derived
 values to `data/derived.env`. Run bootstrap again after changing the mode.
 
-| Mode | Listeners | Certificates | HTTP behavior | Default `OB_SCHEME` |
+| Mode | Listeners | Certificates (`OB_TLS_ISSUER`) | HTTP behavior | Default `OB_SCHEME` |
 | --- | --- | --- | --- | --- |
-| Local (`local`, default) | HTTP and HTTPS | Self-signed | HTTP stays available | `http` |
-| Public (`public`) | HTTP and HTTPS | Let's Encrypt for your domain | Redirect to HTTPS, except health checks and `/status.json` | `https` |
-| Proxy (`proxy`) | HTTP from the gateway | The other gateway handles HTTPS | No redirect inside this stack | `https` |
+| Local (`local`, default) | HTTP and HTTPS | `internal` (default, self-signed) or `files` | HTTP stays available | `http` |
+| Public (`public`) | HTTP and HTTPS | `acme` (default; Let's Encrypt or `OB_ACME_CA`) or `files` | Redirect to HTTPS, except health checks and `/status.json` | `https` |
+| Proxy (`proxy`) | HTTP from the gateway | Unused; the other gateway handles HTTPS | No redirect inside this stack | `https` |
 
 `OB_SCHEME` is the browser URL protocol, independently of the listener protocol. It may
-be `http` or `https` in Local and Proxy Mode; Public Mode requires `https`. This stack's
-Caddy has no certificate issuer setting: for a private ACME CA or certificate files, put
-the stack behind Platform Edge, which has `PE_TLS_ISSUER`.
+be `http` or `https` in Local and Proxy Mode; Public Mode requires `https`. The certificate
+issuer follows the mode unless `OB_TLS_ISSUER` selects another; bootstrap refuses an issuer
+the mode cannot use. See [corporate certificates and private ACME](#corporate-certificates-and-private-acme).
 
 ## Local Mode (default)
 
@@ -86,6 +87,90 @@ redirect ([status document](maintenance.md#status-document)); backend APIs stay 
 Public readiness verifies the certificate with system trust and sends the configured
 hostname as SNI while dialing the loopback published port. With the RustFS console enabled,
 DNS for `rustfs.<domain>` is needed too.
+
+## Corporate certificates and private ACME
+
+`OB_TLS_ISSUER` selects where certificates come from, independently of the access mode:
+`internal` (Caddy's own CA, Local Mode), `acme` (Public Mode) or `files` (Local or Public
+Mode). Proxy Mode ignores it. Relative `OB_TLS_DIR`, `OB_TLS_CA` and `OB_ACME_CA_ROOT`
+paths resolve against this checkout.
+
+Bootstrap records the Compose overlays the issuer needs in the `.env` `COMPOSE_FILE`, after
+the storage and mode files and before operator overlays, and drops overlays an earlier
+issuer needed. Direct Compose commands then use the same files. A `COMPOSE_FILE` exported in
+the shell must equal that selection.
+
+### Private or alternative ACME CA
+
+Set `OB_ACME_CA` to the CA's ACME directory URL (`https://`). For a CA whose chain is not
+in the public trust stores (step-ca, an ACME-enabled corporate CA), set `OB_ACME_CA_ROOT`
+to its CA certificate in PEM form: Caddy trusts it when talking to the ACME server, and
+the bootstrap readiness probe trusts it for the issued server certificates. A CA that
+requires external account binding takes `OB_ACME_EAB_KEY_ID` and `OB_ACME_EAB_HMAC`,
+always together.
+
+```sh
+OB_ACCESS_MODE=public
+OB_PUBLIC_DOMAIN=observe.example.internal
+OB_TLS_ISSUER=acme
+OB_ACME_EMAIL=ops@example.internal
+OB_ACME_CA=https://ca.example.internal/acme/acme/directory
+OB_ACME_CA_ROOT=/etc/ssl/corp/root_ca.crt
+OB_ACME_EAB_KEY_ID=
+OB_ACME_EAB_HMAC=
+```
+
+Bootstrap selects `compose.acme-ca-root.yaml` (mounts the trust file read-only at
+`/certs/acme-ca-root.crt`) and `compose.acme-eab.yaml` when those settings are set.
+Only the HTTP-01 and TLS-ALPN-01 challenges are available: the ACME server must reach the
+host on TCP 80 and 443 for every HTTPS hostname, and DNS-01 is not offered. Account keys
+and issued certificates stay in `caddy-data`.
+
+### Certificate and key files
+
+Put the server certificate chain in `tls.crt` and its unencrypted private key in `tls.key`
+inside one directory:
+
+```sh
+OB_TLS_ISSUER=files
+OB_TLS_DIR=/etc/ssl/observability
+OB_TLS_CA=/etc/ssl/corp/root_ca.crt
+```
+
+The certificate must cover every HTTPS hostname: `OB_PUBLIC_DOMAIN`, `OB_GRAFANA_HOST` and,
+with `OB_RUSTFS_CONSOLE=true`, `OB_RUSTFS_HOST`, by name or by a one-label wildcard
+(`*.example.com` covers `grafana.example.com`, not `example.com`). An IP root cannot use
+`files`. Configured application URLs add no certificate names. Bootstrap reads the subject
+alternative names with `openssl` and refuses a certificate that leaves a hostname
+uncovered. `OB_TLS_CA` is the issuing CA in PEM form for the bootstrap readiness probe;
+leave it empty when that CA is in the host's trust store. Bootstrap selects
+`compose.files.yaml`, which mounts `OB_TLS_DIR` read-only at `/certs` and never creates it.
+
+Caddy runs as root without `CAP_DAC_OVERRIDE`, so it cannot read a key owned by another
+user with mode 0600. Own `tls.key` by root with mode 0600, and keep the certificate
+readable. Bootstrap reads the mounted files from a throwaway Caddy container, off every
+network, before starting, and refuses with `tls_files_unreadable` when Caddy cannot read
+them, for example through a symlink that points outside the directory. In Local Mode,
+`127.0.0.1` keeps its internal-CA certificate; the hostnames use the files.
+
+Replace a certificate by writing the new pair into the directory, then restart Caddy and
+verify the handshake:
+
+```sh
+docker compose --env-file .env --env-file data/derived.env restart caddy
+python3 scripts/bootstrap.py
+```
+
+Caddy runs with its admin API off, so `caddy reload` is unavailable and the restart briefly
+interrupts requests. Caddy does not watch the directory or renew file certificates; renew
+them with your PKI before they expire. Certificate files are outside the Checkpoint; back
+them up with your PKI.
+
+The Checkpoint scripts start services from `compose.yaml` with the storage and proxy
+overlays only, and probe readiness over HTTP in Local Mode and with the system trust store
+in Public Mode. With `files` or a private ACME CA, run `python3 scripts/bootstrap.py` after
+`scripts/restore.sh`; in Public Mode, backup readiness also needs the issuing CA in the
+host's trust store.
 
 ## Behind Platform Edge
 
@@ -276,6 +361,10 @@ in [status document](maintenance.md#status-document).
 | --- | --- |
 | `access_mode_invalid`, `access_host_invalid`, `access_port_invalid` | `OB_ACCESS_MODE`, a hostname or a port setting is malformed; the message names it. |
 | `compose_file_conflict` | A shell `COMPOSE_FILE` disagrees with the recorded selection, a selected file is missing, or the list lacks the overlays for the selected storage and access modes. Unset the shell value or edit `.env`. |
+| `invalid_settings` | An `OB_TLS_ISSUER` the mode cannot use, an incomplete ACME or files setting, a trust file that is not PEM, or a certificate that leaves a hostname uncovered; the message names it. See [corporate certificates](#corporate-certificates-and-private-acme). |
+| `openssl_missing` | `OB_TLS_ISSUER=files` needs `openssl` on the host to read the certificate's names. |
+| `tls_files_unreadable` | Caddy cannot read the mounted certificate files. Own `tls.key` by root with mode 0600 and keep regular files inside the directory. |
+| `not_ready` with `CERTIFICATE_VERIFY_FAILED` | The issuing CA is not in the host's trust store. Set `OB_TLS_CA` to its PEM file. |
 | `platform_network_mismatch` | The shared network exists with another subnet or range. Stop every stack on it, `docker network rm` the network the error names (`OB_PLATFORM_NETWORK`, default `platform`), rerun bootstrap. |
 | `proxy_trust_invalid` | `OB_TRUSTED_PROXIES` holds a subnet or range. Use exact addresses. |
 | `rustfs_console_requires_s3` | The console needs the `s3` profile; a filesystem installation cannot enable it without a storage migration. |

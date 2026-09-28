@@ -41,7 +41,7 @@ initialized does not rotate its stored password; use Grafana's supported passwor
 `.env` holds operator settings and secrets. Bootstrap writes it on a fresh install, then
 changes it only to record `COMPOSE_FILE` and values given in the shell for that run. Values
 it resolves or derives (canonical origins, `OB_*_URL_HOST`, `OB_*_AUTHORITY`, the
-`OB_PUBLIC_PORT_SUFFIX` it derives, `COMPOSE_PROJECT_NAME`, the platform allocation and a
+`OB_PUBLIC_PORT_SUFFIX` it derives, `COMPOSE_PROJECT_NAME`, the platform allocation, the effective `OB_TLS_ISSUER` and a
 keyed hash of the Grafana SMTP file) go to `data/derived.env` beside the env file, mode 0600, rewritten on every
 run. An upgrade moves the derived keys an earlier bootstrap saved in `.env` out on its first run.
 
