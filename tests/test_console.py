@@ -129,6 +129,21 @@ for (const [features, backups, alerts] of [
     result = await c.load(next, probe, ids);
     assert.deepEqual([result.status, result.health, probed], [null, {}, []]);
   }
+  const response = (body, type = 'application/json', extra = {}) =>
+    new Response(body, {status: 200, headers: {'Content-Type': type, ...extra}});
+  probed = [];
+  result = await c.load(() => c.readStatus(response(JSON.stringify(valid), 'application/json; charset=utf-8')),
+    probe, ids);
+  assert.deepEqual([probed, result.health], [['grafana'], {grafana: 'healthy'}]);
+  for (const badResponse of [
+    response(JSON.stringify(valid), 'text/html'),
+    response(JSON.stringify(valid) + ' '.repeat(65537)),
+    response(JSON.stringify(valid), 'application/json', {'Content-Length': '65537'}),
+  ]) {
+    probed = [];
+    result = await c.load(() => c.readStatus(badResponse), probe, ids);
+    assert.deepEqual([result.status, result.health, probed], [null, {}, []]);
+  }
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
         refs = bootstrap.images(CONSOLE.parents[3] / "compose.yaml")

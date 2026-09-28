@@ -37,6 +37,7 @@ function summaryText(status, health, ids) {
 const ENVELOPE = ["contract", "stack", "configuredAt", "components", "features"];
 const FIELDS = ["id", "name", "kind", "enabled", "image", "version", "health", "url"];
 const FEATURES = { backups: ["configured", "lastCheckpointAt"], alerts: ["configured"] };
+const MAX_STATUS_BYTES = 65536;
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const only = (value, keys) => !object(value) || Object.keys(value).every((key) => keys.includes(key));
 const text = (value, max) => typeof value === "string" && value.length >= 1 && value.length <= max;
@@ -95,6 +96,33 @@ function parseStatus(doc) {
     features: { ...(backups && { backups }), ...(alerts && { alerts }) },
   };
 }
+async function readStatus(response) {
+  if (response.status !== 200 ||
+    !/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get("Content-Type") || "") ||
+    Number(response.headers.get("Content-Length")) > MAX_STATUS_BYTES)
+    throw new Error("Status unavailable");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_STATUS_BYTES) throw new Error("Status too large");
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+}
 // One check reads the Status Document first and probes only the components it lists as
 // enabled. Each check starts empty: an absent or invalid document is unknown, never a
 // previous answer.
@@ -108,7 +136,7 @@ async function load(getStatus, probe, ids) {
 }
 
 if (typeof module !== "undefined")
-  module.exports = { probeState, componentState, alertState, versionText, summaryText, parseStatus, load };
+  module.exports = { probeState, componentState, alertState, versionText, summaryText, parseStatus, readStatus, load };
 
 if (typeof document !== "undefined") {
   const $ = (s) => document.querySelector(s);
@@ -191,7 +219,8 @@ if (typeof document !== "undefined") {
     text($("[data-refresh]"), "Checking…");
     try {
       const [{ status, health }] = await Promise.all([
-        load(() => json("/status.json"), probe, $$("[data-component]").map((element) => element.dataset.component)),
+        load(() => request("/status.json").then(readStatus), probe,
+          $$("[data-component]").map((element) => element.dataset.component)),
         links().catch(() => {}),
       ]);
       render(status, health);
