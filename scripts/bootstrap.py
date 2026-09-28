@@ -592,6 +592,14 @@ def check_tls_inputs(runner: Runner, settings: dict[str, str], root: Path) -> No
     issuer = settings["OB_TLS_ISSUER"]
     if issuer == "files" and not settings.get("OB_TLS_DIR"):
         raise Refused("invalid_settings", "OB_TLS_ISSUER=files needs OB_TLS_DIR, a directory holding tls.crt and tls.key")
+    if issuer == "files":
+        try:
+            ipaddress.ip_address(settings["OB_PUBLIC_DOMAIN"])
+        except ValueError:
+            pass
+        else:
+            # 127.0.0.1 keeps the internal CA, so an IP root would be defined twice.
+            raise Refused("invalid_settings", "OB_TLS_ISSUER=files needs a DNS name in OB_PUBLIC_DOMAIN, not an IP root")
     if issuer == "acme":
         if settings.get("OB_ACME_CA") and not re.fullmatch(r"https://[^/\s]+(?:/\S*)?", settings["OB_ACME_CA"]):
             raise Refused("invalid_settings", "OB_ACME_CA must be an https:// ACME directory URL")

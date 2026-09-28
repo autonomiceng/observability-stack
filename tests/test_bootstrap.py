@@ -970,7 +970,7 @@ class BootstrapTests(unittest.TestCase):
                 (["*.observe.example.com"], {}, "cover observe.example.com;"),
                 (["observe.example.com", "*.grafana.observe.example.com"], {}, "grafana.observe.example.com"),
                 (["observe.example.com", "grafana.observe.example.com"], console, "rustfs.observe.example.com"),
-                (["localhost", "*.localhost"], {"OB_ACCESS_MODE": "local", "OB_PUBLIC_DOMAIN": "127.0.0.1"}, "127.0.0.1"),
+                (["127.0.0.1", "*.localhost"], {"OB_ACCESS_MODE": "local", "OB_PUBLIC_DOMAIN": "127.0.0.1"}, "IP root"),
             ):
                 with self.subTest(names=names), self.assertRaises(bootstrap.Refused) as raised:
                     bootstrap.check_tls_inputs(openssl(names), self.tls_settings(**settings), self.root)
