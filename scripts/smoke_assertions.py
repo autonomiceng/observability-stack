@@ -160,6 +160,8 @@ def check_proxy_access(env_file, settings):
         expected_links = {'grafana': settings['OB_GRAFANA_URL']}
         if settings['OB_RUSTFS_CONSOLE'] == 'true':
             expected_links['rustfs'] = bootstrap.rustfs_origin(settings)
+        if settings.get('OB_PLATFORM_URL'):
+            expected_links['platform'] = settings['OB_PLATFORM_URL']
         assert json.loads(body) == expected_links
     print('ok: exact external authority, internal Grafana, same-host sibling ports, root health, links, auth and metrics denial', flush=True)
 
