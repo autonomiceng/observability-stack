@@ -124,7 +124,8 @@ that create containers pass both files (see
 [env files](operations/maintenance.md#env-files)).
 The console's `/links.json` contains this stack's Grafana and optional RustFS origins, including when
 the root console is opened through an IP or an arbitrary local HTTP hostname. The console
-shows this stack only; Platform Edge's console owns cross-stack navigation.
+shows this stack only; Platform Edge's console owns cross-stack navigation, and the optional
+`OB_PLATFORM_URL` adds it to `/links.json` as the console's "Platform" link.
 Local readiness verifies both protocols using the installation's public CA certificate in
 memory. Private keys remain in the existing Caddy data volume; no host trust is installed.
 

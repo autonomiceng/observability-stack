@@ -762,7 +762,7 @@ class BootstrapTests(unittest.TestCase):
             _, existing = bootstrap.read_env(self.env)
             retained = "".join(f"{key}={value}\n" for key, value in existing.items())
             self.env.write_text(retained + "OB_ACCESS_MODE=proxy\nOB_TRUSTED_PROXIES=192.0.2.2/32\n"
-                                "OB_GRAFANA_URL=" + origin + "\n")
+                                "OB_GRAFANA_URL=" + origin + "\nOB_PLATFORM_URL=https://Platform.Tail-Example.ts.net:443\n")
             with patch.object(bootstrap, "__file__", str(self.root / "scripts/bootstrap.py")), \
                  patch.object(bootstrap, "wait_ready"):
                 self.assertEqual(bootstrap.bootstrap(["--template", str(self.template)], runner=runner_with()), 0)
@@ -770,8 +770,16 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(settings["OB_GRAFANA_URL"], origin)
             self.assertEqual(settings["OB_GRAFANA_URL_HOST"], "host.tail-example.ts.net")
             self.assertEqual(settings["OB_GRAFANA_AUTHORITY"], "host.tail-example.ts.net:8447")
-            self.assertEqual(json.loads((self.root / "data/console/links.json").read_text()), {"grafana": origin})
+            platform = "https://platform.tail-example.ts.net"
+            self.assertEqual(settings["OB_PLATFORM_URL"], platform)
+            self.assertEqual(json.loads((self.root / "data/console/links.json").read_text()),
+                             {"grafana": origin, "platform": platform})
             self.assertEqual(settings["OB_TRUSTED_PROXIES"], "192.0.2.2/32")
+        for invalid in ("javascript:alert(1)", "https://platform.test/console", "http://platform.test"):
+            with self.assertRaises(bootstrap.Refused) as refused:
+                bootstrap.access_config({"OB_ACCESS_MODE": "public", "OB_PUBLIC_DOMAIN": "observe.example.com",
+                                         "OB_PLATFORM_URL": invalid})
+            self.assertEqual(refused.exception.code, "platform_url_invalid")
 
     def test_rustfs_console_off_on_s3_and_filesystem_refusal(self):
         for profile in ("", "s3"):

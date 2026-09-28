@@ -3,60 +3,92 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <title>Observability Stack</title>
-  <link rel="icon" href="data:,">
+  <meta name="color-scheme" content="dark light">
+  <title>Observability</title>
+  <link rel="icon" href="/icons/observability.svg">
+  <link rel="stylesheet" href="/platform.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body>
-  <header>
-    <a href="/" class="brand">Observability Stack</a>
-    <nav aria-label="Stack">
-      <a class="github-link" href="https://github.com/autonomiceng/observability-stack" aria-label="observability-stack on GitHub"><svg aria-hidden="true" fill="currentColor" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></svg><span>GitHub</span></a>
+<body class="pk-page">
+  <header class="pk-header">
+    <a class="pk-brand" href="/"><img src="/icons/observability.svg" alt="">Observability</a>
+    <span class="pk-pill" data-scheme></span>
+    <nav class="pk-header-links" aria-label="Links">
+      <a href="https://github.com/autonomiceng/observability-stack" target="_blank" rel="noreferrer"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></svg><span class="pk-sr-only">observability-stack on </span>GitHub ↗</a>
     </nav>
   </header>
 
   <main>
-    <section aria-labelledby="apps">
-      <h1 id="apps">Applications</h1>
-      <ol class="cards">
-        <li data-service="grafana" data-host="grafana">
-          <div class="row">
-            <h2><a data-link="grafana">Grafana</a></h2>
-            <span class="badge" data-badge>checking</span>
+    <div class="toolbar">
+      <h1>Applications</h1>
+      <span class="summary" data-summary></span>
+      <span class="checked" data-checked role="status" aria-live="polite"></span>
+      <button class="pk-button" type="button" data-refresh>Refresh</button>
+    </div>
+    <noscript><p class="pk-notice">Enable JavaScript to view application links and health.</p></noscript>
+
+    <section class="pk-card" aria-label="Applications">
+      <div class="apps">
+        <article class="pk-app" data-component="grafana">
+          <div class="pk-app-head">
+            <img src="/icons/grafana.svg" alt="">
+            <h3><a data-link="grafana" data-path="/" target="_blank" rel="noreferrer">Grafana ↗</a></h3>
+            <span class="pk-badge" data-state="unknown">Unknown</span>
           </div>
-          <p>Logs, metrics, traces and alerts across the host.</p>
-          <dl>
-            <dt>Dashboard</dt><dd><a data-link="grafana" data-path="/d/stacks-overview">Stacks overview</a></dd>
-            <dt>Logs</dt><dd><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22loki%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D">Explore logs</a></dd>
-            <dt>Metrics</dt><dd><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22mimir%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D">Explore metrics</a></dd>
-            <dt>Traces</dt><dd><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22tempo%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D">Explore traces</a></dd>
-            <dt>Version</dt><dd data-version="grafana">…</dd>
-          </dl>
-        </li>
-        <li data-optional-link="rustfs" hidden>
-          <div class="row"><h2><a data-link="rustfs" data-path="/rustfs/console/">RustFS</a></h2></div>
-          <p>Optional object storage console. Privileged human login; agents use the Files API.</p>
-        </li>
-        <li data-service="alerts"><div class="row"><h2>Alert delivery</h2><span class="badge" data-badge>checking</span></div></li>
-      </ol>
+          <p class="pk-app-desc">Explore dashboards, logs, metrics and traces.</p>
+          <div class="pk-endpoints">
+            <div class="pk-endpoint"><span>Dashboard</span><a data-link="grafana" data-path="/d/stacks-overview" target="_blank" rel="noreferrer">Stacks overview</a></div>
+            <div class="pk-endpoint"><span>Logs</span><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22loki%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D" target="_blank" rel="noreferrer">Explore in Loki</a></div>
+            <div class="pk-endpoint"><span>Metrics</span><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22mimir%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D" target="_blank" rel="noreferrer">Explore in Mimir</a></div>
+            <div class="pk-endpoint"><span>Traces</span><a data-link="grafana" data-path="/explore?left=%7B%22datasource%22%3A+%22tempo%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%7D%5D%7D" target="_blank" rel="noreferrer">Explore in Tempo</a></div>
+          </div>
+          <div class="pk-app-foot"><span data-version>Version unknown</span></div>
+        </article>
+        <article class="pk-app" data-alerts>
+          <div class="pk-app-head">
+            <img src="/icons/grafana.svg" alt="">
+            <h3>Alert delivery</h3>
+            <span class="pk-badge" data-state="unknown">Unknown</span>
+          </div>
+          <p class="pk-app-desc">Where Grafana sends firing alerts.</p>
+          <p class="pk-notice" data-state="warn" data-alerts-hint hidden>Alerts go nowhere: set <code>OB_ALERT_WEBHOOK_URL</code>, or <code>OB_ALERT_EMAIL</code> and <code>OB_SMTP_URL</code>, then rerun bootstrap.</p>
+        </article>
+        <article class="pk-app" data-component="rustfs" data-optional-link="rustfs" hidden>
+          <div class="pk-app-head">
+            <img src="/icons/rustfs.svg" alt="">
+            <h3><a data-link="rustfs" data-path="/rustfs/console/" target="_blank" rel="noreferrer">RustFS ↗</a></h3>
+            <span class="pk-badge" data-state="unknown">Unknown</span>
+          </div>
+          <p class="pk-app-desc">Administer the object storage behind Loki, Mimir and Tempo.</p>
+          <div class="pk-app-foot"><span data-version>Version unknown</span></div>
+        </article>
+      </div>
     </section>
-    <section aria-labelledby="datastores">
-      <h1 id="datastores">Collector and backends</h1>
-      <p class="muted">Private to Docker networks. Versions show image tags configured at bootstrap; running content may differ.</p>
-      <table><tbody>
-        <tr data-service="alloy"><th scope="row">Alloy</th><td data-version="alloy">…</td><td><span class="badge" data-badge>checking</span></td></tr>
-        <tr data-service="loki"><th scope="row">Loki</th><td data-version="loki">…</td><td><span class="badge" data-badge>checking</span></td></tr>
-        <tr data-service="tempo"><th scope="row">Tempo</th><td data-version="tempo">…</td><td><span class="badge" data-badge>checking</span></td></tr>
-        <tr data-service="mimir"><th scope="row">Mimir</th><td data-version="mimir">…</td><td><span class="badge" data-badge>checking</span></td></tr>
-        <tr><th scope="row">Caddy</th><td data-version="caddy">…</td><td></td></tr>
-      </tbody></table>
-    </section>
+
+    <details class="pk-card details">
+      <summary>Details</summary>
+      <section>
+        <h2 class="pk-section-label">Configuration</h2>
+        <div class="pk-endpoints">
+          <div class="pk-endpoint"><span>Configured at</span><span data-configured-at>Status unavailable</span></div>
+          <div class="pk-endpoint"><span>Backups</span><span data-backups>Unknown</span></div>
+        </div>
+      </section>
+      <section>
+        <h2 class="pk-section-label">Collector and backends</h2>
+        <p class="lead">Private to the Docker network. Versions are the images configured at bootstrap.</p>
+        <ul class="pk-list">
+          <li data-component="alloy"><img src="/icons/alloy.svg" alt=""><div class="component"><strong>Alloy</strong><span>Collects telemetry and sends it to the stores.</span></div><code data-version></code><span class="pk-badge" data-state="unknown">Unknown</span></li>
+          <li data-component="loki"><img src="/icons/loki.svg" alt=""><div class="component"><strong>Loki</strong><span>Stores and searches logs.</span></div><code data-version></code><span class="pk-badge" data-state="unknown">Unknown</span></li>
+          <li data-component="mimir"><img src="/icons/mimir.svg" alt=""><div class="component"><strong>Mimir</strong><span>Stores and queries metrics.</span></div><code data-version></code><span class="pk-badge" data-state="unknown">Unknown</span></li>
+          <li data-component="tempo"><img src="/icons/tempo.svg" alt=""><div class="component"><strong>Tempo</strong><span>Stores and searches traces.</span></div><code data-version></code><span class="pk-badge" data-state="unknown">Unknown</span></li>
+          <li data-component="rustfs"><img src="/icons/rustfs.svg" alt=""><div class="component"><strong>RustFS</strong><span>Optional object storage for telemetry.</span></div><code data-version></code><span class="pk-badge" data-state="unknown">Unknown</span></li>
+          <li data-component="caddy"><img src="/icons/caddy.svg" alt=""><div class="component"><strong>Caddy</strong><span>Routes every hostname and serves this page.</span></div><code data-version></code><span class="pk-badge" data-state="unknown">Unknown</span></li>
+        </ul>
+      </section>
+    </details>
   </main>
-  <footer>
-    <span data-checked>Health not checked yet.</span>
-    <span>Configured <time data-pinned>…</time></span>
-  </footer>
+
   <script src="/console.js" defer></script>
 </body>
 </html>

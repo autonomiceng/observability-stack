@@ -41,7 +41,7 @@ Alerts evaluate from the start but go nowhere until you configure delivery. Unti
 
 | URL | What |
 | --- | --- |
-| `http://localhost/` | Console: links, live health, alert delivery state, configured versions; `/status.json` is the same data for machines |
+| `http://localhost/` | Console: Grafana links, live health from `/health/<id>`, and the configuration bootstrap wrote to `/status.json` (enabled components, versions, alert delivery) |
 | `http://grafana.localhost/` | Grafana. User `admin`, password `OB_GRAFANA_ADMIN_PASSWORD` in `.env` |
 
 Open Explore, pick Loki, and query `{compose_project="observability-stack"}`. Your own logs are already there. If the LLM gateway runs on the same host, its logs appear under `compose_project="llm-gateway-stack"`; for its metrics, set `OB_SCRAPE_GATEWAY=true` and add Alloy's Platform Network address to the gateway's `LG_CHECKPOINT_ALLOW` ([collection](docs/operations/logging.md#platform-edge-and-optional-collection)).

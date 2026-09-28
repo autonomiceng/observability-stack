@@ -29,8 +29,9 @@ Console and routing to Grafana and the optional RustFS console.
 _Avoid_: collector, mesh
 
 **Stack Console**: the unauthenticated page at the root hostname with this stack's
-application links, readiness, alert delivery state and the configured versions from the
-Status Document; it links no sibling stacks.
+application links, reachability from the Health Paths, and alert delivery state and
+configured versions from the Status Document; it links no sibling stacks, only the Platform
+Edge console when `OB_PLATFORM_URL` is set.
 _Avoid_: dashboard, admin UI
 
 **Status Document**: the public Status v2 file bootstrap writes after readiness and the

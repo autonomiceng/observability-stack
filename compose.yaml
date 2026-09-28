@@ -89,6 +89,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana-admin
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_DEFAULT_THEME: dark
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/stacks.json
       GF_SERVER_ROOT_URL: ${OB_GRAFANA_URL:-${OB_SCHEME:-http}://${OB_GRAFANA_HOST:-grafana.localhost}${OB_PUBLIC_PORT_SUFFIX:-}}/
       GF_SERVER_DOMAIN: ${OB_GRAFANA_URL_HOST:-${OB_GRAFANA_HOST:-grafana.localhost}}
       GF_LOG_MODE: console

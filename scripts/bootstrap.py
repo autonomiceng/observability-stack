@@ -62,7 +62,7 @@ SAVED = (
     "OB_TRUSTED_PROXIES", "OB_GRAFANA_URL", "OB_GRAFANA_URL_HOST", "OB_GRAFANA_AUTHORITY",
     "OB_RUSTFS_CONSOLE", "OB_RUSTFS_CONSOLE_ALLOW", "OB_RUSTFS_HOST", "OB_RUSTFS_URL",
     "OB_RUSTFS_URL_HOST", "OB_RUSTFS_AUTHORITY", "OB_PLATFORM_SUBNET", "OB_PLATFORM_IP_RANGE",
-    "OB_TLS_ISSUER", "OB_ACME_EMAIL", "OB_ACME_CA", "OB_ACME_CA_ROOT", "OB_ACME_EAB_KEY_ID",
+    "OB_PLATFORM_URL", "OB_TLS_ISSUER", "OB_ACME_EMAIL", "OB_ACME_CA", "OB_ACME_CA_ROOT", "OB_ACME_EAB_KEY_ID",
     "OB_ACME_EAB_HMAC", "OB_TLS_DIR", "OB_TLS_CA",
 )
 # Earlier bootstraps saved these in the env file; they are always recomputed.
@@ -201,6 +201,9 @@ def console_links(settings: dict[str, str]) -> dict[str, str]:
     links = {"grafana": grafana_origin(settings)}
     if settings.get("OB_RUSTFS_CONSOLE") == "true":
         links["rustfs"] = rustfs_origin(settings)
+    # The Edge console, linked as the platform home; a standalone stack has none.
+    if settings.get("OB_PLATFORM_URL"):
+        links["platform"] = settings["OB_PLATFORM_URL"]
     return links
 
 
@@ -515,6 +518,7 @@ def access_config(settings: dict[str, str]) -> None:
             raise Refused("access_port_invalid", key + " must be a port number")
     browser_url_config(settings, "grafana")
     browser_url_config(settings, "rustfs")
+    browser_url_config(settings, "platform")
     if (settings["OB_RUSTFS_URL_HOST"] == settings["OB_GRAFANA_HOST"].lower() or
             settings["OB_GRAFANA_URL_HOST"] == settings["OB_RUSTFS_HOST"].lower()):
         raise Refused("rustfs_origin_conflict", "browser origins must not reuse another application's internal hostname")

@@ -275,7 +275,9 @@ another application's hostname (`rustfs_origin_conflict`). Run bootstrap after c
 either.
 
 The Stack Console reads this stack's links from `/links.json` and configured versions from
-`/status.json`. It links no sibling stacks; Platform Edge's console does.
+`/status.json`. It links no sibling stacks; Platform Edge's console does. `OB_PLATFORM_URL`,
+empty by default, is the Edge console's origin; bootstrap validates it with the same rules
+and publishes it in `/links.json`, and the console shows it as a "Platform" header link.
 
 ## RustFS admin console
 
