@@ -1,7 +1,7 @@
 # Maintenance
 
 How to apply a version bump, run Compose with the derived env file, select the S3 profile,
-configure alerts, read the status document, and find missing data.
+configure alerts, read the status document, find missing data, and what Grafana shows first.
 
 - [Updating images](#updating-images)
 - [Env files](#env-files)
@@ -11,6 +11,7 @@ configure alerts, read the status document, and find missing data.
 - [Resource failure](#resource-failure)
 - [Status document](#status-document)
 - [Image experiments](#image-experiments)
+- [Grafana defaults](#grafana-defaults)
 
 ## Updating images
 
@@ -204,3 +205,11 @@ Shipped-default validation, smoke and recovery gates ignore installation and she
 overrides. Renovate continues to update the inline defaults through its native Compose
 manager and existing major/group policies. Checkpoint image requirements are in
 [backup and restore](backup.md).
+
+## Grafana defaults
+
+Grafana starts in the dark theme (`GF_USERS_DEFAULT_THEME=dark` in `compose.yaml`), like the
+Stack Console and the Platform Edge console. Its home page is the provisioned Stacks overview
+dashboard (`GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`, the container path of
+`docker/grafana/dashboards/stacks.json`). Both are defaults: a user or organization
+preference set in Grafana overrides them.

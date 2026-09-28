@@ -65,17 +65,20 @@ done
 access_mode=${SMOKE_ACCESS_MODE:-local}
 grafana_url=
 rustfs_url=
+platform_url=
 case "$access_mode" in
   local) ;;
   proxy)
     grafana_url=https://host.tail-example.ts.net:8447
     rustfs_url=https://host.tail-example.ts.net:8451
+    platform_url=https://host.tail-example.ts.net
     ;;
   *) echo 'SMOKE_ACCESS_MODE must be local or proxy' >&2; exit 2 ;;
 esac
 sed -e "s#^OB_ACCESS_MODE=.*#OB_ACCESS_MODE=$access_mode#" \
     -e "s#^OB_GRAFANA_URL=.*#OB_GRAFANA_URL=$grafana_url#" \
     -e "s#^OB_RUSTFS_URL=.*#OB_RUSTFS_URL=$rustfs_url#" \
+    -e "s#^OB_PLATFORM_URL=.*#OB_PLATFORM_URL=$platform_url#" \
     -e "s#^OB_RUSTFS_CONSOLE=.*#OB_RUSTFS_CONSOLE=$rustfs_console#" \
     -e "s#^OB_HTTP_PORT=.*#OB_HTTP_PORT=$http_port#" \
     -e "s#^OB_HTTPS_PORT=.*#OB_HTTPS_PORT=$https_port#" \

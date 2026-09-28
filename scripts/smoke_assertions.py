@@ -70,15 +70,24 @@ def check(env_file: Path, origin: str, project: str) -> None:
         get(base + '/health/' + service)
     print('ok: all five HTTP readiness endpoints', flush=True)
     page = get(base + '/')
-    assert 'Observability Stack' in page
-    assert re.search(r'<li data-optional-link="rustfs"[^>]*\shidden', page), 'optional console card must default hidden'
-    print('ok: console', flush=True)
+    assert '<title>Observability</title>' in page
+    assert 'href="/platform.css"' in page, 'console does not load the platform UI kit'
+    assert re.search(r'data-optional-link="rustfs"[^>]*\shidden', page), 'optional console card must default hidden'
+    for asset in sorted(set(re.findall(r'(?:src|href)="(/[^"]*)"', page))):
+        get(base + asset)
+    print('ok: console served with the platform UI kit and every asset it references', flush=True)
 
     datasources = api('/api/datasources')
     assert {(ds['uid'], ds['type']) for ds in datasources} == {('mimir', 'prometheus'), ('loki', 'loki'), ('tempo', 'tempo')}
     dashboard = api('/api/dashboards/uid/stacks-overview')
     assert dashboard['meta']['folderTitle'] == 'Stacks'
     assert len(dashboard['dashboard']['panels']) == 4
+    home = api('/api/dashboards/home')
+    # Grafana 13 serves the configured home file under its own UID and redirects there.
+    if 'redirectUri' in home:
+        home = api('/api/dashboards/uid/' + home['redirectUri'].split('/')[2])
+    assert (home['dashboard']['title'], len(home['dashboard']['panels'])) == ('Stacks overview', 4), 'home dashboard'
+    assert api('/api/admin/settings')['users']['default_theme'] == 'dark', 'Grafana defaults to the dark theme'
     assert {rule['uid'] for rule in api('/api/v1/provisioning/alert-rules')} == {'valkey-memory', 'backplane-archive-age', 'checkpoint-age', 'scrape-target-down', 'host-disk-bytes', 'host-disk-inodes', 'loki-ingestion-failures', 'mimir-ingestion-failures', 'tempo-ingestion-failures', 'alloy-remote-write-backlog', 'gateway-checkpoint-age', 'gateway-checkpoint-failed', 'gateway-archiver-failures'}
     rule = api('/api/v1/provisioning/alert-rules/scrape-target-down')
     assert '== bool 0' in next(item['model']['expr'] for item in rule['data'] if item['refId'] == 'A')
@@ -88,7 +97,8 @@ def check(env_file: Path, origin: str, project: str) -> None:
         assert error.code == 401, error.code
     else:
         raise AssertionError('anonymous datasource access enabled')
-    print('ok: generated admin password, anonymous disabled, datasources/dashboard/alerts provisioned', flush=True)
+    print('ok: generated admin password, anonymous disabled, datasources/dashboard/alerts provisioned, '
+          'dark theme and Stacks overview home', flush=True)
 
     query = urllib.parse.urlencode({'query': 'up{job="alloy"}'})
     eventually('/api/datasources/proxy/uid/mimir/api/v1/query?' + query,
@@ -142,7 +152,7 @@ def check_proxy_access(env_file, settings):
     # The same machine's other ports and bare hostname stay on console routes.
     for other in (host, host + ':8443', host + ':8445', host + ':443', settings['OB_PUBLIC_DOMAIN']):
         status, body = request(other, '/')
-        assert status == 200 and b'Observability Stack' in body, other
+        assert status == 200 and b'<title>Observability</title>' in body, other
         assert request(other, '/login')[0] == 404, other
         assert request(other, '/health/grafana')[0] == 200, other
         status, body = request(other, '/links.json')
@@ -150,6 +160,8 @@ def check_proxy_access(env_file, settings):
         expected_links = {'grafana': settings['OB_GRAFANA_URL']}
         if settings['OB_RUSTFS_CONSOLE'] == 'true':
             expected_links['rustfs'] = bootstrap.rustfs_origin(settings)
+        if settings.get('OB_PLATFORM_URL'):
+            expected_links['platform'] = settings['OB_PLATFORM_URL']
         assert json.loads(body) == expected_links
     print('ok: exact external authority, internal Grafana, same-host sibling ports, root health, links, auth and metrics denial', flush=True)
 
@@ -219,7 +231,7 @@ def check_rustfs_console(settings, env_file):
         port = parsed.port or (443 if parsed.scheme == 'https' else 80)
         wrong_authority = f'{host}:{port + 1 if port < 65535 else port - 1}'
         status, location, body = request('/', host=wrong_authority)
-        assert status == 200 and location is None and b'Observability Stack' in body, wrong_authority
+        assert status == 200 and location is None and b'<title>Observability</title>' in body, wrong_authority
         assert request('/rustfs/admin/v3/accountinfo', host=wrong_authority)[0] == 404
         assert request('/rustfs/console/', host=wrong_authority,
                        headers={'X-Forwarded-Host': authority})[0] == 404
