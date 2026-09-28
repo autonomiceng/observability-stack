@@ -51,7 +51,8 @@ function timestamp(value) {
 function origin(value) {
   try {
     const url = new URL(value);
-    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password &&
+    return ["http:", "https:"].includes(url.protocol) && url.pathname === "/" &&
+      !url.username && !url.password &&
       !url.search && !url.hash && !value.includes("?") && !value.includes("#");
   } catch {
     return false;

@@ -62,7 +62,8 @@ for (const bad of [null, {...valid, contract: 1}, {...valid, stack: 'gateway'}, 
 for (const [field, value] of [
   ['name', ''], ['name', 1], ['kind', 'service'], ['enabled', 'true'], ['image', ''],
   ['image', 'repo@sha256:digest'], ['version', 12], ['version', 'bad version'],
-  ['health', '/health/loki'], ['url', 'ftp://example.test'], ['url', 'https://user:pass@example.test'],
+  ['health', '/health/loki'], ['url', 'ftp://example.test'], ['url', 'https://example.test/admin'],
+  ['url', 'https://user:pass@example.test'],
   ['url', 'https://example.test/?token=secret'], ['url', 3],
 ]) {
   const malformed = {...component('grafana', true), [field]: value};
