@@ -818,7 +818,10 @@ def probe_trust(settings: dict[str, str], runner: Runner, command: list[str]) ->
         return certificate.stdout
     root = Path(__file__).resolve().parent.parent
     for key in trust_files(settings):
-        return (root / settings[key]).read_text(encoding="utf-8")
+        try:
+            return (root / settings[key]).read_text(encoding="utf-8")
+        except OSError as error:
+            raise Refused("invalid_settings", f"{key} ({root / settings[key]}) is not readable") from error
     return ""
 
 
