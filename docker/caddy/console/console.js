@@ -23,10 +23,11 @@ function alertState(status) {
 }
 const versionText = (component) =>
   !component ? "Version unknown" : component.version ? `Configured ${component.version}` : "Configured";
-function summaryText(status, health) {
+function summaryText(status, health, ids) {
   // Without a Status Document nothing is known, and an unknown answer is not a failure.
   if (!status) return "Status unavailable";
-  const count = (state) => Object.values(health).filter((s) => s === state).length;
+  const states = [...new Set(ids)].map((id) => componentState(status.components.get(id), health[id]));
+  const count = (state) => states.filter((value) => value === state).length;
   const [up, down, unknown] = ["healthy", "unreachable", "unknown"].map(count);
   const parts = [up + down && `${up} of ${up + down} components reachable`, unknown && `${unknown} unknown`];
   return parts.filter(Boolean).join(" · ") || "Nothing enabled";
@@ -38,6 +39,34 @@ const FIELDS = ["id", "name", "kind", "enabled", "image", "version", "health", "
 const FEATURES = { backups: ["configured", "lastCheckpointAt"], alerts: ["configured"] };
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const only = (value, keys) => !object(value) || Object.keys(value).every((key) => keys.includes(key));
+const text = (value, max) => typeof value === "string" && value.length >= 1 && value.length <= max;
+function timestamp(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|\+00:00)$/.test(value))
+    return NaN;
+  const time = Date.parse(value);
+  // Date.parse silently normalizes nonexistent calendar dates.
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 19) === value.slice(0, 19) ? time : NaN;
+}
+function origin(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password &&
+      !url.search && !url.hash && !value.includes("?") && !value.includes("#");
+  } catch {
+    return false;
+  }
+}
+const validComponent = (c) => object(c) &&
+  typeof c.id === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(c.id) &&
+  text(c.name, 64) &&
+  ["app", "datastore", "gateway", "collector", "runtime"].includes(c.kind) &&
+  typeof c.enabled === "boolean" &&
+  text(c.image, 256) && !c.image.includes("@") &&
+  (c.version === null || (typeof c.version === "string" && /^[A-Za-z0-9._+-]{1,128}$/.test(c.version))) &&
+  c.health === `/health/${c.id}` &&
+  (!Object.hasOwn(c, "url") || (text(c.url, 2048) && origin(c.url)));
+const feature = (value, fields, valid) =>
+  object(value) && fields.every((key) => Object.hasOwn(value, key)) && valid(value) ? value : undefined;
 function parseStatus(doc) {
   if (
     !object(doc) ||
@@ -45,17 +74,26 @@ function parseStatus(doc) {
     doc.stack !== "observability" ||
     !ENVELOPE.every((key) => Object.hasOwn(doc, key)) ||
     !only(doc, ENVELOPE) ||
+    !Number.isFinite(timestamp(doc.configuredAt)) ||
     !Array.isArray(doc.components) ||
+    doc.components.length > 32 ||
     !object(doc.features) ||
     !only(doc.features, Object.keys(FEATURES)) ||
-    Object.entries(doc.features).some(([key, feature]) => !only(feature, FEATURES[key])) ||
+    Object.entries(doc.features).some(([key, value]) => object(value) && !only(value, FEATURES[key])) ||
     doc.components.some((c) => !only(c, FIELDS))
   )
     throw new Error("Unsupported status");
   const ids = doc.components.map((c) => c?.id).filter((id) => typeof id === "string");
   if (new Set(ids).size !== ids.length) throw new Error("Duplicate component");
-  const valid = (c) => typeof c?.id === "string" && typeof c.enabled === "boolean";
-  return { ...doc, components: new Map(doc.components.filter(valid).map((c) => [c.id, c])) };
+  const backups = feature(doc.features.backups, FEATURES.backups,
+    (value) => typeof value.configured === "boolean" &&
+      (value.lastCheckpointAt === null || Number.isFinite(timestamp(value.lastCheckpointAt))));
+  const alerts = feature(doc.features.alerts, FEATURES.alerts, (value) => typeof value.configured === "boolean");
+  return {
+    ...doc,
+    components: new Map(doc.components.filter(validComponent).map((c) => [c.id, c])),
+    features: { ...(backups && { backups }), ...(alerts && { alerts }) },
+  };
 }
 // One check reads the Status Document first and probes only the components it lists as
 // enabled. Each check starts empty: an absent or invalid document is unknown, never a
@@ -131,7 +169,7 @@ if (typeof document !== "undefined") {
     const alerts = alertState(status);
     badge($("[data-alerts] .pk-badge"), alerts);
     $("[data-alerts-hint]").hidden = alerts !== "degraded";
-    text($("[data-summary]"), summaryText(status, health));
+    text($("[data-summary]"), summaryText(status, health, $$("[data-component]").map((element) => element.dataset.component)));
     text($("[data-configured-at]"), status ? utc(status.configuredAt) : "Status unavailable");
     const backups = status?.features?.backups;
     text(
