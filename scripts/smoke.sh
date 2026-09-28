@@ -131,3 +131,38 @@ python3 scripts/smoke_assertions.py "$env_file" "localhost:$http_port" "$COMPOSE
 if [ "$profile" = s3 ]; then
   python3 scripts/smoke_s3.py "$env_file" "localhost:$http_port"
 fi
+
+if [ "$access_mode" = local ]; then
+  # Operator certificate files: a throwaway CA signs one leaf for every Local Mode HTTPS name.
+  # OpenSSL rejects a wildcard directly under a single-label domain such as *.localhost.
+  mkdir "$work/certs"
+  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,DNS:grafana.localhost,DNS:rustfs.localhost\n' > "$work/leaf.cnf"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/ca.key" -out "$work/ca.crt" \
+    -subj '/CN=observability-stack smoke CA' -days 2 -addext 'basicConstraints=critical,CA:TRUE' \
+    -addext 'keyUsage=critical,keyCertSign,cRLSign' 2>/dev/null
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/certs/tls.key" -out "$work/leaf.csr" \
+    -subj '/CN=localhost' 2>/dev/null
+  openssl x509 -req -in "$work/leaf.csr" -CA "$work/ca.crt" -CAkey "$work/ca.key" -CAcreateserial -out "$work/certs/tls.crt" \
+    -days 2 -extfile "$work/leaf.cnf" 2>/dev/null
+  # Caddy reads the key as uid 0 without CAP_DAC_OVERRIDE; this throwaway key stays inside the private work directory.
+  chmod 0644 "$work/certs/tls.key"
+  docker compose --env-file "$env_file" --env-file "$work/data/derived.env" exec -T caddy \
+    cat /data/caddy/pki/authorities/local/root.crt > "$work/root.crt"
+  # Bootstrap records the shell choices and the overlay in the env file.
+  OB_TLS_ISSUER=files OB_TLS_DIR="$work/certs" OB_TLS_CA="$work/ca.crt" \
+    python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
+  expected=compose.yaml:${profiles:+compose.s3.yaml:}compose.files.yaml
+  [ "$(sed -n 's/^COMPOSE_FILE=//p' "$env_file")" = "$expected" ] || { echo 'files issuer: COMPOSE_FILE lacks the overlay' >&2; exit 1; }
+  echo 'ok: files issuer: bootstrap recorded the overlay and verified HTTPS readiness against OB_TLS_CA'
+  for target in localhost/health/grafana grafana.localhost/login; do
+    host=${target%%/*}
+    url="https://$host:$https_port/${target#*/}"
+    code=$(curl --noproxy '*' --max-time 10 --cacert "$work/ca.crt" -sS -o /dev/null -w '%{http_code}' \
+      --resolve "$host:$https_port:127.0.0.1" "$url")
+    [ "$code" = 200 ] || { echo "files issuer: $url answered $code" >&2; exit 1; }
+    if curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS -o /dev/null --resolve "$host:$https_port:127.0.0.1" \
+        "$url" 2>/dev/null; then echo "files issuer: $host still serves the internal CA certificate" >&2; exit 1; fi
+  done
+  curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS -o /dev/null "https://127.0.0.1:$https_port/health/status"
+  echo 'ok: files issuer: application hostnames verified by the operator CA only; 127.0.0.1 keeps the internal CA'
+fi

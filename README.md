@@ -55,7 +55,7 @@ Open Explore, pick Loki, and query `{compose_project="observability-stack"}`. Yo
 | Localhost only (default) | `OB_ACCESS_MODE=local`; HTTP and self-signed HTTPS on loopback, no redirects | [Local Mode](docs/operations/ingress.md#local-mode-default) |
 | Private access from your devices over Tailscale | Behind Platform Edge: its `bootstrap.py --tailscale --with observability`. Standalone: `OB_ACCESS_MODE=proxy`, `OB_GRAFANA_URL`, host `tailscale serve` | [Tailscale](docs/operations/ingress.md#tailscale) |
 | Public hostname with Let's Encrypt | `OB_ACCESS_MODE=public`, `OB_PUBLIC_DOMAIN`, `OB_BIND_HOST=0.0.0.0` | [Public Mode](docs/operations/ingress.md#public-mode) |
-| Corporate CA or certificate files | Not offered by this stack's Caddy; put it behind Platform Edge, which has `PE_TLS_ISSUER` | [Behind Platform Edge](docs/operations/ingress.md#behind-platform-edge) |
+| Corporate CA, private ACME or certificate files | `OB_TLS_ISSUER=acme` with `OB_ACME_CA`, or `OB_TLS_ISSUER=files` with `OB_TLS_DIR` | [Corporate certificates and private ACME](docs/operations/ingress.md#corporate-certificates-and-private-acme) |
 | Behind Platform Edge on a shared host | `OB_ACCESS_MODE=proxy`, `OB_HTTP_PORT=18180`; Edge's bundle installer writes these | [Behind Platform Edge](docs/operations/ingress.md#behind-platform-edge) |
 
 ## What's inside

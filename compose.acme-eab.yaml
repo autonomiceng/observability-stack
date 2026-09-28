@@ -1,0 +1,7 @@
+# Selected by bootstrap when OB_ACME_EAB_KEY_ID and OB_ACME_EAB_HMAC are set (external account binding).
+services:
+  caddy:
+    environment:
+      OB_ACME_ACCOUNT: eab
+      OB_ACME_EAB_KEY_ID: ${OB_ACME_EAB_KEY_ID:?OB_ACME_EAB_KEY_ID is required with OB_ACME_EAB_HMAC}
+      OB_ACME_EAB_HMAC: ${OB_ACME_EAB_HMAC:?OB_ACME_EAB_HMAC is required with OB_ACME_EAB_KEY_ID}

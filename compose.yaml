@@ -26,6 +26,10 @@ services:
     environment:
       OB_ACCESS_MODE: ${OB_ACCESS_MODE:-local}
       OB_PUBLIC_DOMAIN: ${OB_PUBLIC_DOMAIN:-localhost}
+      # Bootstrap writes the effective issuer (acme in Public Mode) to data/derived.env.
+      OB_TLS_ISSUER: ${OB_TLS_ISSUER:-internal}
+      OB_ACME_EMAIL: ${OB_ACME_EMAIL:-}
+      OB_ACME_CA: ${OB_ACME_CA:-}
       OB_GRAFANA_HOST: ${OB_GRAFANA_HOST:-grafana.localhost}
       OB_GRAFANA_URL_HOST: ${OB_GRAFANA_URL_HOST:-}
       OB_GRAFANA_AUTHORITY: ${OB_GRAFANA_AUTHORITY:-}
