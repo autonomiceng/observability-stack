@@ -26,12 +26,24 @@ assert.deepEqual([null, {features: {}}, {features: {alerts: {configured: true}}}
   .map(c.alertState), ['unknown', 'unknown', 'configured', 'degraded']);
 assert.deepEqual([undefined, on, {enabled: true, version: null}].map(c.versionText),
   ['Version unknown', 'Configured v1.0.0', 'Configured']);
-for (const bad of [null, {contract: 1, stack: 'observability', components: []}, {contract: 2, stack: 'gateway', components: []}])
-  assert.throws(() => c.parseStatus(bad));
+assert.deepEqual([
+  [null, {}], [{}, {}], [{}, {a: 'healthy', b: 'unreachable'}], [{}, {a: 'healthy', b: 'unknown'}], [{}, {a: 'unknown'}],
+].map(([status, health]) => c.summaryText(status, health)),
+  ['Status unavailable', 'Nothing enabled', '1 of 2 reachable', '1 of 1 reachable · 1 unknown', '1 unknown']);
+const component = (id, enabled) => ({id, name: id, kind: 'app', enabled, image: 'grafana/grafana:13.2.2',
+  version: '13.2.2', health: '/health/' + id});
+const valid = {contract: 2, stack: 'observability', configuredAt: '2026-09-28T20:00:00Z',
+  components: [component('grafana', true), component('rustfs', false), {id: 'bad'}],
+  features: {backups: {configured: true, lastCheckpointAt: null}, alerts: {configured: false}}};
+assert.deepEqual([...c.parseStatus(valid).components.keys()], ['grafana', 'rustfs']);
+// The field set is closed: an extra field anywhere, a missing envelope field or a duplicate ID rejects the document.
+for (const bad of [null, {...valid, contract: 1}, {...valid, stack: 'gateway'}, {...valid, extra: 1},
+  (({features, ...rest}) => rest)(valid), {...valid, components: [{...component('grafana', true), running: true}]},
+  {...valid, features: {...valid.features, logs: {}}}, {...valid, features: {...valid.features, alerts: {configured: true, to: 'x'}}},
+  {...valid, components: [component('grafana', true), component('grafana', false)]}])
+  assert.throws(() => c.parseStatus(bad), undefined, JSON.stringify(bad));
 
 (async () => {
-  const valid = {contract: 2, stack: 'observability', components: [
-    {id: 'grafana', enabled: true}, {id: 'rustfs', enabled: false}, {id: 'bad'}]};
   const ids = ['grafana', 'rustfs', 'loki', 'grafana'];
   let probed = [];
   const probe = async (id) => { probed.push(id); return 'healthy'; };

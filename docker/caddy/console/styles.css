@@ -17,7 +17,6 @@ main {
 .checked { margin-left: auto; color: var(--pk-muted); font-size: var(--pk-size-meta); }
 
 .apps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--pk-space-4); }
-.apps > [hidden] { display: none; }
 .pk-endpoint > a { font-size: var(--pk-size-small); }
 
 .details summary { color: var(--pk-accent); font-size: var(--pk-size-small); font-weight: 550; cursor: pointer; }

@@ -23,9 +23,37 @@ function alertState(status) {
 }
 const versionText = (component) =>
   !component ? "Version unknown" : component.version ? `Configured ${component.version}` : "Configured";
+function summaryText(status, health) {
+  // Without a Status Document nothing is known, and an unknown answer is not a failure.
+  if (!status) return "Status unavailable";
+  const count = (state) => Object.values(health).filter((s) => s === state).length;
+  const [up, down, unknown] = ["healthy", "unreachable", "unknown"].map(count);
+  const parts = [up + down && `${up} of ${up + down} reachable`, unknown && `${unknown} unknown`];
+  return parts.filter(Boolean).join(" · ") || "Nothing enabled";
+}
+// Status v2 has a closed field set (docs/conventions.md): any other field makes the whole
+// document malformed, as it does for the Edge console.
+const ENVELOPE = ["contract", "stack", "configuredAt", "components", "features"];
+const FIELDS = ["id", "name", "kind", "enabled", "image", "version", "health", "url"];
+const FEATURES = { backups: ["configured", "lastCheckpointAt"], alerts: ["configured"] };
+const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const only = (value, keys) => !object(value) || Object.keys(value).every((key) => keys.includes(key));
 function parseStatus(doc) {
-  if (doc?.contract !== 2 || doc.stack !== "observability" || !Array.isArray(doc.components))
+  if (
+    !object(doc) ||
+    doc.contract !== 2 ||
+    doc.stack !== "observability" ||
+    !ENVELOPE.every((key) => Object.hasOwn(doc, key)) ||
+    !only(doc, ENVELOPE) ||
+    !Array.isArray(doc.components) ||
+    !object(doc.features) ||
+    !only(doc.features, Object.keys(FEATURES)) ||
+    Object.entries(doc.features).some(([key, feature]) => !only(feature, FEATURES[key])) ||
+    doc.components.some((c) => !only(c, FIELDS))
+  )
     throw new Error("Unsupported status");
+  const ids = doc.components.map((c) => c?.id).filter((id) => typeof id === "string");
+  if (new Set(ids).size !== ids.length) throw new Error("Duplicate component");
   const valid = (c) => typeof c?.id === "string" && typeof c.enabled === "boolean";
   return { ...doc, components: new Map(doc.components.filter(valid).map((c) => [c.id, c])) };
 }
@@ -42,7 +70,7 @@ async function load(getStatus, probe, ids) {
 }
 
 if (typeof module !== "undefined")
-  module.exports = { probeState, componentState, alertState, versionText, parseStatus, load };
+  module.exports = { probeState, componentState, alertState, versionText, summaryText, parseStatus, load };
 
 if (typeof document !== "undefined") {
   const $ = (s) => document.querySelector(s);
@@ -103,9 +131,7 @@ if (typeof document !== "undefined") {
     const alerts = alertState(status);
     badge($("[data-alerts] .pk-badge"), alerts);
     $("[data-alerts-hint]").hidden = alerts !== "degraded";
-    const up = Object.values(health).filter((state) => state === "healthy").length;
-    // Without a Status Document nothing is known, which is not the same as unreachable.
-    text($("[data-summary]"), status ? `${up} of ${Object.keys(health).length} reachable` : "Status unavailable");
+    text($("[data-summary]"), summaryText(status, health));
     text($("[data-configured-at]"), status ? utc(status.configuredAt) : "Status unavailable");
     const backups = status?.features?.backups;
     text(
