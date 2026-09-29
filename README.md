@@ -28,7 +28,7 @@ Everything stores to local volumes by default. An optional profile moves the bac
 
 ## Quick start
 
-You need a Linux Docker host with journald, Docker Compose 2.24.4 or newer, and Python 3.11 or newer. [mise](https://mise.jdx.dev) installs the pinned tools if you use it. See [logging](docs/operations/logging.md) for hosts without journald.
+You need a Linux Docker host with journald, Docker Compose 2.24.4 or newer, and Python 3.11 or newer. [mise](https://mise.jdx.dev) installs the pinned developer test tools if you use it. See [logging](docs/operations/logging.md) for hosts without journald.
 
 ```sh
 git clone https://github.com/autonomiceng/observability-stack.git && cd observability-stack
@@ -36,6 +36,7 @@ python3 scripts/bootstrap.py
 ```
 
 Bootstrap writes `.env` from `.env.example` with a generated Grafana admin password, creates or validates the shared `platform` network, starts everything and waits for it to be healthy. About a minute. `.env` is yours afterwards; bootstrap writes the values it derives to `data/derived.env`, so run Compose yourself as `docker compose --env-file .env --env-file data/derived.env ...` ([env files](docs/operations/maintenance.md#env-files)).
+Use `python3 scripts/bootstrap.py --env-file <path>` if your operator env file is elsewhere; its `data/derived.env` is written beside that file. `--render-only` writes both files for inspection without starting services. Keep those scratch files private.
 
 Alerts evaluate from the start but go nowhere until you configure delivery. Until then bootstrap reports `degraded` with `alert_delivery_placeholder` and the console shows it. Set `OB_ALERT_WEBHOOK_URL`, or `OB_ALERT_EMAIL` plus `OB_SMTP_URL`, in `.env` and run bootstrap again ([alerts](docs/operations/maintenance.md#alerts-and-metric-contracts)).
 
@@ -55,7 +56,7 @@ Open Explore, pick Loki, and query `{compose_project="observability-stack"}`. Yo
 | Localhost only (default) | `OB_ACCESS_MODE=local`; HTTP and self-signed HTTPS on loopback, no redirects | [Local Mode](docs/operations/ingress.md#local-mode-default) |
 | Private access from your devices over Tailscale | Behind Platform Edge: its `bootstrap.py --tailscale --with observability`. Standalone: `OB_ACCESS_MODE=proxy`, `OB_GRAFANA_URL`, host `tailscale serve` | [Tailscale](docs/operations/ingress.md#tailscale) |
 | Public hostname with Let's Encrypt | `OB_ACCESS_MODE=public`, `OB_PUBLIC_DOMAIN`, `OB_BIND_HOST=0.0.0.0` | [Public Mode](docs/operations/ingress.md#public-mode) |
-| Corporate CA, private ACME or certificate files | `OB_TLS_ISSUER=acme` with `OB_ACME_CA`, or `OB_TLS_ISSUER=files` with `OB_TLS_DIR` | [Corporate certificates and private ACME](docs/operations/ingress.md#corporate-certificates-and-private-acme) |
+| Corporate CA, private ACME or certificate files | For private ACME, use the public settings above plus `OB_TLS_ISSUER=acme` and `OB_ACME_CA`; for files, set `OB_TLS_ISSUER=files` and `OB_TLS_DIR` in Local or Public Mode | [Corporate certificates and private ACME](docs/operations/ingress.md#corporate-certificates-and-private-acme) |
 | Behind Platform Edge on a shared host | `OB_ACCESS_MODE=proxy`, `OB_HTTP_PORT=18180`; Edge's bundle installer writes these | [Behind Platform Edge](docs/operations/ingress.md#behind-platform-edge) |
 
 ## What's inside
@@ -74,12 +75,16 @@ Default images are pinned as `tag@sha256` in `compose.yaml`. Set a complete `OB_
 
 ## Upgrade
 
+Take a Checkpoint with `scripts/backup.sh` and retain the original `.env` before applying an
+upgrade. Then run these three commands:
+
 ```sh
-scripts/backup.sh          # the rollback boundary
 git pull
-docker compose pull
+docker compose --env-file .env --env-file data/derived.env pull --policy missing
 python3 scripts/bootstrap.py
 ```
+
+Use the same selected env file with `scripts/backup.sh --env-file <path>` and `python3 scripts/bootstrap.py --env-file <path>` when it is outside the checkout, and pass both that file and its adjacent `data/derived.env` to Compose. The env file's recorded `COMPOSE_FILE` and `COMPOSE_PROFILES` keep the storage, proxy and TLS overlays selected. Shipped `tag@sha256` defaults update when `git pull` changes `compose.yaml`; a complete `OB_*_IMAGE` reference in the env file still overrides its pin. `--policy missing` pulls selected images absent from the cache and keeps cached references with explicit non-`latest` tags. Compose always pulls `:latest`, including an untagged image, even with this policy. Use a tag such as `local/observability:experiment` for a local-only override. To refresh a mutable remote override deliberately, run the same Compose command with `pull --policy always <service>`. See the [Compose pull policy](https://docs.docker.com/reference/compose-file/services/#pull_policy) and [image experiments](docs/operations/maintenance.md#image-experiments).
 
 Bootstrap records any new setting, recreates what changed and waits for readiness. Read [maintenance](docs/operations/maintenance.md#updating-images) first: Tempo needs its query quiescence check before it stops, and `config.alloy` changes need an explicit Alloy recreate. An installation that ran the version 1 status timer retires it once with `scripts/retire-status-timer.sh` ([status document](docs/operations/maintenance.md#status-document)).
 
@@ -106,8 +111,9 @@ Each runs alone. Shared conventions are in [docs/conventions.md](docs/convention
 ## Development
 
 ```sh
+mise install                          # Python, ShellCheck and test-only Node.js
 scripts/validate.sh                    # static checks and image config validators
-python3 -m unittest discover -s tests  # unit tests, no Docker
+python3 -m unittest discover -s tests  # unit tests, including the Node.js console check; no Docker
 scripts/smoke.sh                       # disposable filesystem install
 SMOKE_PROFILE=s3 scripts/smoke.sh      # RustFS restart persistence
 scripts/backup-drill.sh                # disposable Checkpoint restore and measured RTO

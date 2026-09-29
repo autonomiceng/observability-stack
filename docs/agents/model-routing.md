@@ -1,13 +1,13 @@
 # Model routing
 
-Routing for every delegation from this repo. Decided by the Owner 2026-09-16; applies to the four stack repos (llm-gateway-stack, agent-backplane, observability-stack, platform-edge). See `../conventions.md`.
+Routing for delegation from this repo. The Owner's current choices supersede older routing tables in the four stack repos. Use high effort for every entry.
 
 | Work | Model + effort | Verified by |
 | --- | --- | --- |
-| Orchestration, design, plans, prose, UI, AGENTS.md | Claude Fable 5.1 | gpt-6 high |
-| Final review of anything that touches persistent data or migrations | Claude Fable 5.1 | none; this is the last gate |
-| Red team, design review, high-risk implementation (Compose, bootstrap, migration scripts) | gpt-6 high | Claude Fable 5.1 |
-| Routine and mechanical implementation | gpt-5.6-sol medium | gpt-6 medium or Claude Fable 5.1 |
+| Difficult planning and code | gpt-6-astra high | gpt-6-sol high |
+| Medium and small implementation, including docs and CI | gpt-6-sol high | gpt-5.6-sol high |
+| UI | Opus 5.5 high | gpt-6-astra high |
+| Red team | gpt-6-astra high | Independent review assigned by the Owner |
 
 Rules:
 
