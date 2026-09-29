@@ -56,7 +56,7 @@ Open Explore, pick Loki, and query `{compose_project="observability-stack"}`. Yo
 | Localhost only (default) | `OB_ACCESS_MODE=local`; HTTP and self-signed HTTPS on loopback, no redirects | [Local Mode](docs/operations/ingress.md#local-mode-default) |
 | Private access from your devices over Tailscale | Behind Platform Edge: its `bootstrap.py --tailscale --with observability`. Standalone: `OB_ACCESS_MODE=proxy`, `OB_GRAFANA_URL`, host `tailscale serve` | [Tailscale](docs/operations/ingress.md#tailscale) |
 | Public hostname with Let's Encrypt | `OB_ACCESS_MODE=public`, `OB_PUBLIC_DOMAIN`, `OB_BIND_HOST=0.0.0.0` | [Public Mode](docs/operations/ingress.md#public-mode) |
-| Corporate CA, private ACME or certificate files | `OB_TLS_ISSUER=acme` with `OB_ACME_CA`, or `OB_TLS_ISSUER=files` with `OB_TLS_DIR` | [Corporate certificates and private ACME](docs/operations/ingress.md#corporate-certificates-and-private-acme) |
+| Corporate CA, private ACME or certificate files | For private ACME, use the public settings above plus `OB_TLS_ISSUER=acme` and `OB_ACME_CA`; for files, set `OB_TLS_ISSUER=files` and `OB_TLS_DIR` in Local or Public Mode | [Corporate certificates and private ACME](docs/operations/ingress.md#corporate-certificates-and-private-acme) |
 | Behind Platform Edge on a shared host | `OB_ACCESS_MODE=proxy`, `OB_HTTP_PORT=18180`; Edge's bundle installer writes these | [Behind Platform Edge](docs/operations/ingress.md#behind-platform-edge) |
 
 ## What's inside
@@ -75,8 +75,10 @@ Default images are pinned as `tag@sha256` in `compose.yaml`. Set a complete `OB_
 
 ## Upgrade
 
+Take a Checkpoint with `scripts/backup.sh` and retain the original `.env` before applying an
+upgrade. Then run these three commands:
+
 ```sh
-scripts/backup.sh          # the rollback boundary
 git pull
 docker compose --env-file .env --env-file data/derived.env pull --policy missing
 python3 scripts/bootstrap.py
