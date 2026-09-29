@@ -26,7 +26,8 @@ configure alerts, read the status document, find missing data, and what Grafana 
    is a failed gate. See [Tempo query quiescence](backup.md#tempo-query-quiescence).
    Do not query Tempo directly during this fence. Its ordinary 45-second grace alone cannot
    prevent the recent-query shutdown hang.
-6. Apply with `docker compose pull` and `python3 scripts/bootstrap.py`, then check readiness,
+6. Apply with `docker compose --env-file .env --env-file data/derived.env pull --policy missing`
+   and `python3 scripts/bootstrap.py`, then check readiness,
    Grafana login and historical telemetry before resuming producers. Keep source volumes
    and the pre-change Checkpoint until recovery verification completes.
 
@@ -199,6 +200,10 @@ see `.env.example`. Empty or unset values inherit the digest-pinned defaults in
 Native `docker compose` applies the overrides directly. Tags and locally built images
 are allowed for unvalidated experiments, including stores. Use a Checkpoint before a
 persistent change; an image switch does not migrate data or change storage-mode rules.
+The upgrade pull retains cached images with explicit non-`latest` tags; Compose still pulls
+`:latest` and untagged references with `--policy missing`. Give a local-only image an
+explicit tag such as `local/observability:experiment`. Pull a mutable remote override
+deliberately with `docker compose --env-file .env --env-file data/derived.env pull --policy always <service>`.
 Run bootstrap after changing references to refresh configured version labels. The console
 reports the effective configuration at bootstrap time, not the running content.
 Shipped-default validation, smoke and recovery gates ignore installation and shell image

@@ -24,6 +24,27 @@ jobs:
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
       - run: scripts/validate.sh
       - run: python3 -m unittest discover -s tests -v
+      - name: Render fresh configuration in isolated scratch
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          with tempfile.TemporaryDirectory(prefix="observability-render-") as directory:
+              scratch = Path(directory)
+              env = os.environ | {
+                  "OB_STATE_DIR": str(scratch / "state"),
+                  "OB_BACKUP_DIR": str(scratch / "backups"),
+              }
+              subprocess.run(
+                  ["python3", "scripts/bootstrap.py", "--env-file", str(scratch / ".env"), "--render-only"],
+                  env=env, stdout=subprocess.DEVNULL, check=True,
+              )
+              assert (scratch / ".env").stat().st_size > 0
+              assert (scratch / "data" / "derived.env").stat().st_size > 0
+          PY
 
   smoke:
     name: Smoke contract (${{ matrix.profile }})

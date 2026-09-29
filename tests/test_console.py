@@ -1,5 +1,4 @@
 import json
-import shutil
 import subprocess
 import sys
 import unittest
@@ -11,7 +10,6 @@ import bootstrap  # noqa: E402
 
 
 class ConsoleTests(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("node"), "Node.js required for the static console check")
     def test_badges_follow_status_and_health(self):
         script = r'''
 const assert = require('node:assert/strict');
